@@ -1,0 +1,530 @@
+/**
+ * Widget de chat flotante — Agente Actas de Entrega
+ * Vanilla JS, encapsulado en IIFE para no contaminar el scope global
+ * (importante al inyectar el script en WordPress).
+ */
+(function () {
+  "use strict";
+
+  /* ---------- Referencias al DOM (solo clases namespaced) ---------- */
+  var widget = document.querySelector(".ua-chat-widget");
+  var ventana = document.querySelector(".ua-chat-window");
+  var areaMensajes = document.querySelector(".ua-chat-messages");
+  var formulario = document.querySelector(".ua-chat-input-area");
+  var campo = document.querySelector(".ua-chat-field");
+  var botonEnviar = document.querySelector(".ua-chat-send");
+  var botonFlotante = document.querySelector(".ua-chat-btn");
+  var botonCerrar = document.querySelector(".ua-chat-close");
+  var tooltip = document.getElementById("ua-chat-tooltip");
+
+  if (!widget || !ventana || !areaMensajes || !formulario || !campo) {
+    return;
+  }
+
+  /**
+   * Memoria de la sesión.
+   * Estructura compatible con APIs tipo Gemini:
+   * { role: 'user' | 'model', parts: [{ text: '...' }] }
+   */
+  var chatHistory = [];
+
+  var MENSAJE_BIENVENIDA =
+    "¡Hola! Soy tu Tutor IA del curso de Actas de Entrega. ¿En qué te puedo ayudar hoy?";
+
+  var TOOLTIP_LECCION =
+    "¿Dudas con esta lección? Estoy aquí para ayudarte.";
+  var TOOLTIP_CUESTIONARIO =
+    "¿Dudas con este cuestionario? Estoy aquí para ayudarte.";
+
+  /** Curso LearnDash Actas de Entrega — clave de persistencia por curso */
+  var UA_CHAT_COURSE_ID = 46067;
+  var UA_CHAT_STORAGE_KEY = "ua-chat-history-" + UA_CHAT_COURSE_ID;
+  var UA_CHAT_MAX_MENSAJES = 80;
+
+  var estaCargando = false;
+
+  /* Temporizadores de la coreografía visual (tooltip) */
+  let tooltipShowTimer;
+  let tooltipHideTimer;
+
+  /* ============================================================
+     Contexto de página (lección vs cuestionario LearnDash)
+     ============================================================ */
+
+  /** Detecta si estamos en un cuestionario LearnDash / WP Pro Quiz. */
+  function esPaginaCuestionario() {
+    var body = document.body;
+    if (!body) {
+      return false;
+    }
+
+    if (
+      body.classList.contains("single-sfwd-quiz") ||
+      body.classList.contains("sfwd-quiz")
+    ) {
+      return true;
+    }
+
+    /* BuddyBoss / LearnDash a veces marcan el post type en class */
+    if (/\bsfwd-quiz\b/.test(body.className)) {
+      return true;
+    }
+
+    if (
+      document.querySelector(
+        ".wpProQuiz_content, .ld-quiz-status, #learndash_post_quiz, .learndash-wrapper .wpProQuiz_content"
+      )
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Ajusta posición del FAB y texto del tooltip según el contexto.
+   * En quiz sube el widget para no tapar el botón Next.
+   */
+  function aplicarContextoPagina() {
+    var enQuiz = esPaginaCuestionario();
+
+    if (enQuiz) {
+      widget.classList.add("ua-chat-en-quiz");
+    } else {
+      widget.classList.remove("ua-chat-en-quiz");
+    }
+
+    if (tooltip) {
+      tooltip.textContent = enQuiz ? TOOLTIP_CUESTIONARIO : TOOLTIP_LECCION;
+    }
+  }
+
+  /* ============================================================
+     Persistencia localStorage (sobrevive al cambiar de página)
+     ============================================================ */
+
+  /**
+   * Recorta el historial a los últimos N mensajes.
+   * @param {Array} historial
+   * @returns {Array}
+   */
+  function recortarHistorial(historial) {
+    if (!Array.isArray(historial)) {
+      return [];
+    }
+    if (historial.length <= UA_CHAT_MAX_MENSAJES) {
+      return historial;
+    }
+    return historial.slice(historial.length - UA_CHAT_MAX_MENSAJES);
+  }
+
+  /** Guarda chatHistory en localStorage (máx. 80 mensajes). */
+  function guardarHistorial() {
+    try {
+      chatHistory = recortarHistorial(chatHistory);
+      window.localStorage.setItem(
+        UA_CHAT_STORAGE_KEY,
+        JSON.stringify(chatHistory)
+      );
+    } catch (error) {
+      /* Quota o modo privado: el chat sigue en memoria de esta página */
+    }
+  }
+
+  /**
+   * Lee y valida el historial guardado.
+   * @returns {Array|null}
+   */
+  function cargarHistorialGuardado() {
+    try {
+      var crudo = window.localStorage.getItem(UA_CHAT_STORAGE_KEY);
+      if (!crudo) {
+        return null;
+      }
+
+      var data = JSON.parse(crudo);
+      if (!Array.isArray(data) || data.length === 0) {
+        return null;
+      }
+
+      var limpio = [];
+      for (var i = 0; i < data.length; i++) {
+        var item = data[i];
+        if (!item || (item.role !== "user" && item.role !== "model")) {
+          continue;
+        }
+        if (
+          !item.parts ||
+          !item.parts[0] ||
+          typeof item.parts[0].text !== "string"
+        ) {
+          continue;
+        }
+        limpio.push({
+          role: item.role,
+          parts: [{ text: item.parts[0].text }]
+        });
+      }
+
+      limpio = recortarHistorial(limpio);
+      return limpio.length > 0 ? limpio : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /** Pinta en pantalla todo el historial restaurado (sin volver a guardar). */
+  function pintarHistorialCompleto(historial) {
+    for (var i = 0; i < historial.length; i++) {
+      var msg = historial[i];
+      pintarMensaje(msg.role, msg.parts[0].text);
+    }
+  }
+
+  /* ============================================================
+     Utilidades
+     ============================================================ */
+
+  /** Escapa HTML para evitar XSS al pintar texto del usuario o del modelo. */
+  function escaparHtml(texto) {
+    return String(texto)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  /**
+   * Convierte markdown básico a HTML seguro para la burbuja:
+   * - # / ## / ### títulos → estilo de encabezado (sin mostrar #)
+   * - **negrita** → <strong>
+   * - listas * - • → viñetas
+   * - saltos de línea \n → <br>
+   */
+  function renderizarMarkdown(texto) {
+    var seguro = escaparHtml(texto);
+
+    /* Encabezados Markdown → título visual sin los # */
+    seguro = seguro.replace(
+      /^#{1,6}\s+(.+)$/gm,
+      '<span class="ua-chat-md-heading">$1</span>'
+    );
+
+    /* Negritas */
+    seguro = seguro.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+
+    /* Viñetas: *, -, • o ^ al inicio de línea */
+    seguro = seguro.replace(
+      /^[ \t]*[\*\-\u2022\^]\s+(.+)$/gm,
+      '<span class="ua-chat-md-li">$1</span>'
+    );
+
+    seguro = seguro.replace(/\n/g, "<br>");
+    return seguro;
+  }
+
+  /** Desplaza el área de mensajes al final con comportamiento suave. */
+  function scrollAlFinal() {
+    areaMensajes.scrollTo({
+      top: areaMensajes.scrollHeight,
+      behavior: "smooth"
+    });
+  }
+
+  /** Ajusta la altura del textarea al contenido (máx. limitado por CSS). */
+  function ajustarAlturaCampo() {
+    campo.style.height = "auto";
+    campo.style.height = campo.scrollHeight + "px";
+  }
+
+  /* ============================================================
+     Renderizado de burbujas
+     ============================================================ */
+
+  /**
+   * Pinta un mensaje en el hilo.
+   * @param {'user'|'model'} rol
+   * @param {string} texto
+   * @returns {HTMLElement} fila insertada
+   */
+  function pintarMensaje(rol, texto) {
+    var fila = document.createElement("div");
+    var esUsuario = rol === "user";
+
+    fila.className =
+      "ua-chat-row " + (esUsuario ? "ua-chat-row-user" : "ua-chat-row-bot");
+
+    var burbuja = document.createElement("div");
+    burbuja.className =
+      "ua-chat-bubble " +
+      (esUsuario ? "ua-chat-bubble-user" : "ua-chat-bubble-bot");
+    burbuja.innerHTML = renderizarMarkdown(texto);
+
+    fila.appendChild(burbuja);
+    areaMensajes.appendChild(fila);
+    scrollAlFinal();
+
+    return fila;
+  }
+
+  /** Inserta la burbuja de "Typing..." del bot y la devuelve para poder retirarla. */
+  function mostrarTyping() {
+    var fila = document.createElement("div");
+    fila.className = "ua-chat-row ua-chat-row-bot ua-chat-typing-row";
+
+    var burbuja = document.createElement("div");
+    burbuja.className = "ua-chat-bubble ua-chat-bubble-bot ua-chat-typing";
+    burbuja.setAttribute("aria-label", "El asistente está escribiendo");
+    burbuja.innerHTML =
+      '<span class="ua-chat-dot"></span>' +
+      '<span class="ua-chat-dot"></span>' +
+      '<span class="ua-chat-dot"></span>';
+
+    fila.appendChild(burbuja);
+    areaMensajes.appendChild(fila);
+    scrollAlFinal();
+
+    return fila;
+  }
+
+  function quitarTyping(nodoTyping) {
+    if (nodoTyping && nodoTyping.parentNode) {
+      nodoTyping.parentNode.removeChild(nodoTyping);
+    }
+  }
+
+  /* ============================================================
+     Backend WordPress (admin-ajax.php)
+     ============================================================ */
+
+  /**
+   * Envía el historial al gateway PHP y devuelve el texto del agente.
+   * Requiere window.uaChatConfig (nonce + ajaxUrl) inyectado por backend.php.
+   * @param {Array} history
+   * @returns {Promise<string>}
+   */
+  async function sendMessageToBackend(history) {
+    if (typeof window.uaChatConfig === "undefined") {
+      throw new Error("No se encontró la configuración segura. ¿Estás logueado?");
+    }
+
+    var formData = new URLSearchParams();
+    formData.append("action", window.uaChatConfig.action);
+    formData.append("nonce", window.uaChatConfig.nonce);
+    formData.append("history", JSON.stringify(history));
+
+    var response = await fetch(window.uaChatConfig.ajaxUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: formData.toString()
+    });
+
+    var result = await response.json();
+
+    if (!result.success) {
+      throw new Error(result.data.message || "Error desconocido en el servidor");
+    }
+
+    return result.data.text;
+  }
+
+  /* ============================================================
+     Flujo de envío
+     ============================================================ */
+
+  function actualizarEstadoEnviar() {
+    var hayTexto = campo.value.trim().length > 0;
+    botonEnviar.disabled = !hayTexto || estaCargando;
+  }
+
+  async function enviarMensaje(texto) {
+    var contenido = (texto || "").trim();
+    if (!contenido || estaCargando) {
+      return;
+    }
+
+    estaCargando = true;
+    actualizarEstadoEnviar();
+
+    chatHistory.push({
+      role: "user",
+      parts: [{ text: contenido }]
+    });
+    guardarHistorial();
+    pintarMensaje("user", contenido);
+
+    campo.value = "";
+    ajustarAlturaCampo();
+    actualizarEstadoEnviar();
+
+    var typing = mostrarTyping();
+
+    try {
+      var respuesta = await sendMessageToBackend(chatHistory);
+      quitarTyping(typing);
+
+      chatHistory.push({
+        role: "model",
+        parts: [{ text: respuesta }]
+      });
+      guardarHistorial();
+      pintarMensaje("model", respuesta);
+    } catch (error) {
+      quitarTyping(typing);
+      pintarMensaje(
+        "model",
+        "Lo siento, no pude procesar tu mensaje. Inténtalo de nuevo en unos segundos."
+      );
+    } finally {
+      estaCargando = false;
+      actualizarEstadoEnviar();
+      campo.focus();
+    }
+  }
+
+  /* ============================================================
+     Abrir / cerrar widget
+     ============================================================ */
+
+  function estaAbierto() {
+    return widget.classList.contains("ua-chat-open");
+  }
+
+  function detenerCoreografiaVisual() {
+    clearTimeout(tooltipShowTimer);
+    clearTimeout(tooltipHideTimer);
+
+    if (tooltip) {
+      tooltip.classList.remove("ua-tooltip-visible");
+      tooltip.classList.add("ua-tooltip-oculto");
+    }
+  }
+
+  function pausarPulso() {
+    if (botonFlotante) {
+      botonFlotante.classList.remove("ua-animacion-pulso");
+    }
+  }
+
+  function reanudarPulso() {
+    if (botonFlotante && !estaAbierto()) {
+      botonFlotante.classList.add("ua-animacion-pulso");
+    }
+  }
+
+  function abrirChat() {
+    /* Al abrir: cancelar timers del tooltip y pausar el pulso (solo mientras el chat está abierto) */
+    detenerCoreografiaVisual();
+    pausarPulso();
+
+    widget.classList.add("ua-chat-open");
+    ventana.setAttribute("aria-hidden", "false");
+    botonFlotante.setAttribute("aria-expanded", "true");
+    botonFlotante.setAttribute("aria-label", "Cerrar chat");
+    window.setTimeout(function () {
+      campo.focus();
+      scrollAlFinal();
+    }, 230);
+  }
+
+  function cerrarChat() {
+    widget.classList.remove("ua-chat-open");
+    ventana.setAttribute("aria-hidden", "true");
+    botonFlotante.setAttribute("aria-expanded", "false");
+    botonFlotante.setAttribute("aria-label", "Abrir chat");
+    /* El pulso se mantiene en la misma página tras cerrar el chat/tooltip */
+    reanudarPulso();
+  }
+
+  function alternarChat() {
+    if (estaAbierto()) {
+      cerrarChat();
+    } else {
+      abrirChat();
+    }
+  }
+
+  /* ============================================================
+     Eventos
+     ============================================================ */
+
+  botonFlotante.addEventListener("click", alternarChat);
+  botonCerrar.addEventListener("click", cerrarChat);
+
+  formulario.addEventListener("submit", function (evento) {
+    evento.preventDefault();
+    enviarMensaje(campo.value);
+  });
+
+  campo.addEventListener("input", function () {
+    ajustarAlturaCampo();
+    actualizarEstadoEnviar();
+  });
+
+  /* Enter envía; Shift+Enter inserta un salto de línea */
+  campo.addEventListener("keydown", function (evento) {
+    if (evento.key === "Enter" && !evento.shiftKey) {
+      evento.preventDefault();
+      enviarMensaje(campo.value);
+    }
+  });
+
+  document.addEventListener("keydown", function (evento) {
+    if (evento.key === "Escape" && estaAbierto()) {
+      cerrarChat();
+    }
+  });
+
+  /* ============================================================
+     Inicialización
+     ============================================================ */
+
+  function iniciarCoreografiaVisual() {
+    if (botonFlotante) {
+      botonFlotante.classList.add("ua-animacion-pulso");
+    }
+
+    /* Aparece a los 7s; se oculta 10s después (en el segundo 17) */
+    tooltipShowTimer = setTimeout(function () {
+      if (!tooltip || estaAbierto()) {
+        return;
+      }
+      tooltip.classList.remove("ua-tooltip-oculto");
+      tooltip.classList.add("ua-tooltip-visible");
+    }, 7000);
+
+    tooltipHideTimer = setTimeout(function () {
+      if (!tooltip) {
+        return;
+      }
+      tooltip.classList.remove("ua-tooltip-visible");
+      tooltip.classList.add("ua-tooltip-oculto");
+    }, 17000);
+  }
+
+  function iniciar() {
+    aplicarContextoPagina();
+
+    var guardado = cargarHistorialGuardado();
+
+    if (guardado) {
+      chatHistory = guardado;
+      pintarHistorialCompleto(chatHistory);
+    } else {
+      chatHistory.push({
+        role: "model",
+        parts: [{ text: MENSAJE_BIENVENIDA }]
+      });
+      guardarHistorial();
+      pintarMensaje("model", MENSAJE_BIENVENIDA);
+    }
+
+    actualizarEstadoEnviar();
+    iniciarCoreografiaVisual();
+  }
+
+  iniciar();
+})();

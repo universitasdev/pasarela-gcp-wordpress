@@ -1,0 +1,38 @@
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Editores / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.cursor/
+
+# Entorno y secretos (nunca versionar)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*credentials*.json
+*service-account*.json
+secrets/
+
+# Logs y temporales
+*.log
+npm-debug.log*
+tmp/
+temp/
+.cache/
+
+# Dependencias (si se agregan en el futuro)
+node_modules/
+vendor/
+
+# Build / empaquetado
+dist/
+build/
+*.zip
+*.tar.gz
