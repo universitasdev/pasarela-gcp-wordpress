@@ -78,7 +78,10 @@ function ua_chat_handle_send_message() {
 	$texto = ua_chat_consultar_bff( $mensaje, get_current_user_id() );
 	if ( is_wp_error( $texto ) ) {
 		ua_chat_log_error( 'bff', $texto->get_error_message() );
-		wp_send_json_error( array( 'message' => 'Error comunicando con el servidor IA' ), 500 );
+		wp_send_json_error(
+			array( 'message' => ua_chat_mensaje_amigable( $texto ) ),
+			500
+		);
 	}
 
 	wp_send_json_success( array( 'text' => $texto ) );
@@ -138,7 +141,7 @@ function ua_chat_sanitizar_historial( $raw ) {
 	}
 
 	$limpio    = array();
-	$max_items = 40;
+	$max_items = 24;
 	$max_chars = 8000;
 
 	foreach ( $raw as $item ) {
@@ -203,6 +206,54 @@ function ua_chat_extraer_texto_mensaje( $item ) {
  * 4. Llamada al BFF (Cloud Run)
  * ============================================================================= */
 
+/**
+ * Traduce errores técnicos del BFF a mensajes amigables para el alumno.
+ * El detalle técnico queda solo en ua_chat_log_error() (WP_DEBUG).
+ *
+ * @param WP_Error $error
+ * @return string
+ */
+function ua_chat_mensaje_amigable( WP_Error $error ) {
+	$msg  = strtolower( $error->get_error_message() );
+	$code = $error->get_error_code();
+
+	if (
+		false !== strpos( $msg, 'timeout' ) ||
+		false !== strpos( $msg, 'timed out' ) ||
+		false !== strpos( $msg, 'curl error 28' )
+	) {
+		return 'El tutor está tardando más de lo habitual. Intenta de nuevo en unos segundos o haz una pregunta más específica.';
+	}
+
+	if (
+		false !== strpos( $msg, '429' ) ||
+		false !== strpos( $msg, 'resource_exhausted' ) ||
+		false !== strpos( $msg, '503' ) ||
+		false !== strpos( $msg, '504' )
+	) {
+		return 'Tu consulta es muy amplia. ¿Podrías indicar el módulo o el tema concreto?';
+	}
+
+	if (
+		'ua_chat_bff_empty' === $code ||
+		false !== strpos( $msg, 'sin texto usable' ) ||
+		false !== strpos( $msg, 'respuesta vacía' ) ||
+		false !== strpos( $msg, 'respuesta del bff vacía' )
+	) {
+		return 'No recibí una respuesta del tutor. Intenta reformular tu pregunta.';
+	}
+
+	if (
+		false !== strpos( $msg, 'http 4' ) ||
+		false !== strpos( $msg, 'http 5' ) ||
+		false !== strpos( $msg, 'bff rechazó' )
+	) {
+		return 'No pude conectar con el tutor en este momento. Intenta de nuevo en unos segundos.';
+	}
+
+	return 'No pude conectar con el tutor en este momento. Intenta de nuevo en unos segundos.';
+}
+
 function ua_chat_consultar_bff( $mensaje, $user_id ) {
 	$session_id = 'wp-' . (int) $user_id;
 
@@ -224,7 +275,7 @@ function ua_chat_consultar_bff( $mensaje, $user_id ) {
 	);
 
 	if ( is_wp_error( $response ) ) {
-		return new WP_Error( 'ua_chat_bff', $response->get_error_message() );
+		return new WP_Error( 'ua_chat_bff_transport', $response->get_error_message() );
 	}
 
 	$code    = (int) wp_remote_retrieve_response_code( $response );
@@ -235,14 +286,22 @@ function ua_chat_consultar_bff( $mensaje, $user_id ) {
 		$detalle = is_array( $decoded ) && isset( $decoded['detail'] )
 			? (string) $decoded['detail']
 			: ( 'HTTP ' . $code );
-		return new WP_Error( 'ua_chat_bff', 'BFF rechazó la petición: ' . $detalle );
+		return new WP_Error(
+			'ua_chat_bff',
+			'BFF rechazó la petición: HTTP ' . $code . ' — ' . $detalle
+		);
 	}
 
 	if ( ! is_array( $decoded ) || empty( $decoded['response'] ) || ! is_string( $decoded['response'] ) ) {
-		return new WP_Error( 'ua_chat_bff', 'Respuesta del BFF sin texto usable' );
+		return new WP_Error( 'ua_chat_bff_empty', 'Respuesta del BFF sin texto usable' );
 	}
 
-	return trim( $decoded['response'] );
+	$texto = trim( $decoded['response'] );
+	if ( '' === $texto ) {
+		return new WP_Error( 'ua_chat_bff_empty', 'Respuesta del BFF vacía' );
+	}
+
+	return $texto;
 }
 
 /* =============================================================================
@@ -302,6 +361,17 @@ function ua_chat_widget_css() {
   box-sizing: border-box;
   line-height: 1.45;
   color: #1a1a1a;
+}
+
+/* En cuestionarios LearnDash: subir el FAB para no tapar el botón Next */
+.ua-chat-widget.ua-chat-en-quiz {
+  bottom: 120px;
+}
+
+/* Reserva extra de altura: bottom 120 + FAB/gap + margen superior */
+.ua-chat-widget.ua-chat-en-quiz .ua-chat-window {
+  max-height: calc(100vh - 220px);
+  max-height: calc(100dvh - 220px);
 }
 
 .ua-chat-widget *,
@@ -503,6 +573,32 @@ function ua_chat_widget_css() {
   font-weight: 700;
 }
 
+.ua-chat-md-heading {
+  display: block;
+  margin: 0.35em 0 0.2em;
+  font-size: 1.05em;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.ua-chat-md-heading:first-child {
+  margin-top: 0;
+}
+
+.ua-chat-md-li {
+  display: block;
+  position: relative;
+  padding-left: 1.1em;
+  margin: 0.15em 0;
+}
+
+.ua-chat-md-li::before {
+  content: "•";
+  position: absolute;
+  left: 0;
+  color: inherit;
+}
+
 /* Indicador de escritura (3 puntitos) */
 .ua-chat-typing {
   display: inline-flex;
@@ -615,10 +711,11 @@ function ua_chat_widget_css() {
   padding: 0;
   border: 0;
   border-radius: 50%;
-  background: #ffffff;
+  background: #03035b;
+  color: #ffffff;
   box-shadow:
-    0 8px 24px rgba(3, 3, 91, 0.18),
-    0 2px 6px rgba(0, 0, 0, 0.08);
+    0 8px 24px rgba(3, 3, 91, 0.35),
+    0 2px 6px rgba(0, 0, 0, 0.12);
   cursor: pointer;
   transition: transform 0.18s ease, box-shadow 0.18s ease;
 }
@@ -626,12 +723,12 @@ function ua_chat_widget_css() {
 .ua-chat-btn:hover {
   transform: scale(1.05);
   box-shadow:
-    0 10px 28px rgba(3, 3, 91, 0.22),
-    0 3px 8px rgba(0, 0, 0, 0.1);
+    0 10px 28px rgba(3, 3, 91, 0.42),
+    0 3px 8px rgba(0, 0, 0, 0.14);
 }
 
 .ua-chat-btn:focus-visible {
-  outline: 3px solid #03035b;
+  outline: 3px solid #4d4dff;
   outline-offset: 3px;
 }
 
@@ -642,6 +739,10 @@ function ua_chat_widget_css() {
   align-items: center;
   justify-content: center;
   transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.ua-chat-btn-icon svg {
+  stroke: #ffffff;
 }
 
 .ua-chat-btn-close {
@@ -691,8 +792,78 @@ function ua_chat_widget_css() {
   .ua-chat-widget.ua-chat-open .ua-chat-btn {
     display: none;
   }
+
+  .ua-chat-widget.ua-chat-open #ua-chat-tooltip {
+    display: none;
+  }
 }
 
+/* ---------- Coreografía visual: pulso + tooltip ---------- */
+@keyframes softPulse {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow:
+      0 8px 24px rgba(3, 3, 91, 0.35),
+      0 2px 6px rgba(0, 0, 0, 0.12),
+      0 0 0 0 rgba(77, 77, 255, 0.45);
+  }
+  50% {
+    transform: scale(1.05);
+    box-shadow:
+      0 10px 28px rgba(3, 3, 91, 0.42),
+      0 3px 8px rgba(0, 0, 0, 0.14),
+      0 0 0 12px rgba(77, 77, 255, 0);
+  }
+}
+
+.ua-animacion-pulso {
+  animation: softPulse 2s ease-in-out infinite;
+}
+
+#ua-chat-tooltip {
+  position: absolute;
+  right: 0;
+  bottom: calc(60px + 16px + 8px);
+  max-width: 220px;
+  padding: 10px 14px;
+  background: #03035b;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-align: left;
+  border-radius: 12px;
+  box-shadow: 0 8px 20px rgba(3, 3, 91, 0.22);
+  white-space: normal;
+  z-index: 1;
+}
+
+#ua-chat-tooltip::after {
+  content: "";
+  position: absolute;
+  right: 22px;
+  bottom: -6px;
+  width: 12px;
+  height: 12px;
+  background: #03035b;
+  transform: rotate(45deg);
+  border-radius: 2px;
+}
+
+.ua-tooltip-oculto {
+  opacity: 0;
+  transform: translateY(10px);
+  pointer-events: none;
+  transition: all 0.4s ease;
+}
+
+.ua-tooltip-visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+  transition: all 0.4s ease;
+}
 UA_CHAT_CSS;
 }
 
@@ -747,16 +918,17 @@ function ua_chat_widget_html() {
       </form>
     </section>
 
-    <!-- Botón flotante: abre y cierra el chat -->
+    <!-- Tooltip de atracción + botón flotante -->
+    <div id="ua-chat-tooltip" class="ua-tooltip-oculto">¿Dudas con esta lección? Estoy aquí para ayudarte.</div>
     <button type="button" class="ua-chat-btn" aria-label="Abrir chat" aria-expanded="false">
       <span class="ua-chat-btn-icon ua-chat-btn-open" aria-hidden="true">
-        <!-- Icono de mensaje SVG (#03035b) -->
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="#03035b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <!-- Icono de mensaje SVG (blanco sobre fondo azul) -->
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
         </svg>
       </span>
       <span class="ua-chat-btn-icon ua-chat-btn-close" aria-hidden="true">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="#767777" stroke-width="2" stroke-linecap="round">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round">
           <path d="M18 6L6 18M6 6l12 12"/>
         </svg>
       </span>
@@ -784,6 +956,7 @@ function ua_chat_widget_js() {
   var botonEnviar = document.querySelector(".ua-chat-send");
   var botonFlotante = document.querySelector(".ua-chat-btn");
   var botonCerrar = document.querySelector(".ua-chat-close");
+  var tooltip = document.getElementById("ua-chat-tooltip");
 
   if (!widget || !ventana || !areaMensajes || !formulario || !campo) {
     return;
@@ -799,7 +972,155 @@ function ua_chat_widget_js() {
   var MENSAJE_BIENVENIDA =
     "¡Hola! Soy tu Tutor IA del curso de Actas de Entrega. ¿En qué te puedo ayudar hoy?";
 
+  var TOOLTIP_LECCION =
+    "¿Dudas con esta lección? Estoy aquí para ayudarte.";
+  var TOOLTIP_CUESTIONARIO =
+    "¿Dudas con este cuestionario? Estoy aquí para ayudarte.";
+
+  /** Curso LearnDash Actas de Entrega — clave de persistencia por curso */
+  var UA_CHAT_COURSE_ID = 46067;
+  var UA_CHAT_STORAGE_KEY = "ua-chat-history-" + UA_CHAT_COURSE_ID;
+  var UA_CHAT_MAX_MENSAJES = 24;
+
   var estaCargando = false;
+
+  /* Temporizadores de la coreografía visual (tooltip) */
+  let tooltipShowTimer;
+  let tooltipHideTimer;
+
+  /* ============================================================
+     Contexto de página (lección vs cuestionario LearnDash)
+     ============================================================ */
+
+  /** Detecta si estamos en un cuestionario LearnDash / WP Pro Quiz. */
+  function esPaginaCuestionario() {
+    var body = document.body;
+    if (!body) {
+      return false;
+    }
+
+    if (
+      body.classList.contains("single-sfwd-quiz") ||
+      body.classList.contains("sfwd-quiz")
+    ) {
+      return true;
+    }
+
+    /* BuddyBoss / LearnDash a veces marcan el post type en class */
+    if (/\bsfwd-quiz\b/.test(body.className)) {
+      return true;
+    }
+
+    if (
+      document.querySelector(
+        ".wpProQuiz_content, .ld-quiz-status, #learndash_post_quiz, .learndash-wrapper .wpProQuiz_content"
+      )
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Ajusta posición del FAB y texto del tooltip según el contexto.
+   * En quiz sube el widget para no tapar el botón Next.
+   */
+  function aplicarContextoPagina() {
+    var enQuiz = esPaginaCuestionario();
+
+    if (enQuiz) {
+      widget.classList.add("ua-chat-en-quiz");
+    } else {
+      widget.classList.remove("ua-chat-en-quiz");
+    }
+
+    if (tooltip) {
+      tooltip.textContent = enQuiz ? TOOLTIP_CUESTIONARIO : TOOLTIP_LECCION;
+    }
+  }
+
+  /* ============================================================
+     Persistencia localStorage (sobrevive al cambiar de página)
+     ============================================================ */
+
+  /**
+   * Recorta el historial a los últimos N mensajes.
+   * @param {Array} historial
+   * @returns {Array}
+   */
+  function recortarHistorial(historial) {
+    if (!Array.isArray(historial)) {
+      return [];
+    }
+    if (historial.length <= UA_CHAT_MAX_MENSAJES) {
+      return historial;
+    }
+    return historial.slice(historial.length - UA_CHAT_MAX_MENSAJES);
+  }
+
+  /** Guarda chatHistory en localStorage (máx. 24 mensajes). */
+  function guardarHistorial() {
+    try {
+      chatHistory = recortarHistorial(chatHistory);
+      window.localStorage.setItem(
+        UA_CHAT_STORAGE_KEY,
+        JSON.stringify(chatHistory)
+      );
+    } catch (error) {
+      /* Quota o modo privado: el chat sigue en memoria de esta página */
+    }
+  }
+
+  /**
+   * Lee y valida el historial guardado.
+   * @returns {Array|null}
+   */
+  function cargarHistorialGuardado() {
+    try {
+      var crudo = window.localStorage.getItem(UA_CHAT_STORAGE_KEY);
+      if (!crudo) {
+        return null;
+      }
+
+      var data = JSON.parse(crudo);
+      if (!Array.isArray(data) || data.length === 0) {
+        return null;
+      }
+
+      var limpio = [];
+      for (var i = 0; i < data.length; i++) {
+        var item = data[i];
+        if (!item || (item.role !== "user" && item.role !== "model")) {
+          continue;
+        }
+        if (
+          !item.parts ||
+          !item.parts[0] ||
+          typeof item.parts[0].text !== "string"
+        ) {
+          continue;
+        }
+        limpio.push({
+          role: item.role,
+          parts: [{ text: item.parts[0].text }]
+        });
+      }
+
+      limpio = recortarHistorial(limpio);
+      return limpio.length > 0 ? limpio : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /** Pinta en pantalla todo el historial restaurado (sin volver a guardar). */
+  function pintarHistorialCompleto(historial) {
+    for (var i = 0; i < historial.length; i++) {
+      var msg = historial[i];
+      pintarMensaje(msg.role, msg.parts[0].text);
+    }
+  }
 
   /* ============================================================
      Utilidades
@@ -816,12 +1137,30 @@ function ua_chat_widget_js() {
   }
 
   /**
-   * Convierte markdown básico a HTML seguro:
-   * **negrita** → <strong> y saltos de línea \n → <br>
+   * Convierte markdown básico a HTML seguro para la burbuja:
+   * - # / ## / ### títulos → estilo de encabezado (sin mostrar #)
+   * - **negrita** → <strong>
+   * - listas * - • → viñetas
+   * - saltos de línea \n → <br>
    */
   function renderizarMarkdown(texto) {
     var seguro = escaparHtml(texto);
+
+    /* Encabezados Markdown → título visual sin los # */
+    seguro = seguro.replace(
+      /^#{1,6}\s+(.+)$/gm,
+      '<span class="ua-chat-md-heading">$1</span>'
+    );
+
+    /* Negritas */
     seguro = seguro.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+
+    /* Viñetas: *, -, • o ^ al inicio de línea */
+    seguro = seguro.replace(
+      /^[ \t]*[\*\-\u2022\^]\s+(.+)$/gm,
+      '<span class="ua-chat-md-li">$1</span>'
+    );
+
     seguro = seguro.replace(/\n/g, "<br>");
     return seguro;
   }
@@ -955,6 +1294,7 @@ function ua_chat_widget_js() {
       role: "user",
       parts: [{ text: contenido }]
     });
+    guardarHistorial();
     pintarMensaje("user", contenido);
 
     campo.value = "";
@@ -971,13 +1311,14 @@ function ua_chat_widget_js() {
         role: "model",
         parts: [{ text: respuesta }]
       });
+      guardarHistorial();
       pintarMensaje("model", respuesta);
     } catch (error) {
       quitarTyping(typing);
-      pintarMensaje(
-        "model",
-        "Lo siento, no pude procesar tu mensaje. Inténtalo de nuevo en unos segundos."
-      );
+      var mensajeError = (error && error.message)
+        ? error.message
+        : "Lo siento, no pude procesar tu mensaje. Inténtalo de nuevo en unos segundos.";
+      pintarMensaje("model", mensajeError);
     } finally {
       estaCargando = false;
       actualizarEstadoEnviar();
@@ -993,7 +1334,33 @@ function ua_chat_widget_js() {
     return widget.classList.contains("ua-chat-open");
   }
 
+  function detenerCoreografiaVisual() {
+    clearTimeout(tooltipShowTimer);
+    clearTimeout(tooltipHideTimer);
+
+    if (tooltip) {
+      tooltip.classList.remove("ua-tooltip-visible");
+      tooltip.classList.add("ua-tooltip-oculto");
+    }
+  }
+
+  function pausarPulso() {
+    if (botonFlotante) {
+      botonFlotante.classList.remove("ua-animacion-pulso");
+    }
+  }
+
+  function reanudarPulso() {
+    if (botonFlotante && !estaAbierto()) {
+      botonFlotante.classList.add("ua-animacion-pulso");
+    }
+  }
+
   function abrirChat() {
+    /* Al abrir: cancelar timers del tooltip y pausar el pulso (solo mientras el chat está abierto) */
+    detenerCoreografiaVisual();
+    pausarPulso();
+
     widget.classList.add("ua-chat-open");
     ventana.setAttribute("aria-hidden", "false");
     botonFlotante.setAttribute("aria-expanded", "true");
@@ -1009,6 +1376,8 @@ function ua_chat_widget_js() {
     ventana.setAttribute("aria-hidden", "true");
     botonFlotante.setAttribute("aria-expanded", "false");
     botonFlotante.setAttribute("aria-label", "Abrir chat");
+    /* El pulso se mantiene en la misma página tras cerrar el chat/tooltip */
+    reanudarPulso();
   }
 
   function alternarChat() {
@@ -1054,17 +1423,51 @@ function ua_chat_widget_js() {
      Inicialización
      ============================================================ */
 
+  function iniciarCoreografiaVisual() {
+    if (botonFlotante) {
+      botonFlotante.classList.add("ua-animacion-pulso");
+    }
+
+    /* Aparece a los 7s; se oculta 10s después (en el segundo 17) */
+    tooltipShowTimer = setTimeout(function () {
+      if (!tooltip || estaAbierto()) {
+        return;
+      }
+      tooltip.classList.remove("ua-tooltip-oculto");
+      tooltip.classList.add("ua-tooltip-visible");
+    }, 7000);
+
+    tooltipHideTimer = setTimeout(function () {
+      if (!tooltip) {
+        return;
+      }
+      tooltip.classList.remove("ua-tooltip-visible");
+      tooltip.classList.add("ua-tooltip-oculto");
+    }, 17000);
+  }
+
   function iniciar() {
-    chatHistory.push({
-      role: "model",
-      parts: [{ text: MENSAJE_BIENVENIDA }]
-    });
-    pintarMensaje("model", MENSAJE_BIENVENIDA);
+    aplicarContextoPagina();
+
+    var guardado = cargarHistorialGuardado();
+
+    if (guardado) {
+      chatHistory = guardado;
+      pintarHistorialCompleto(chatHistory);
+    } else {
+      chatHistory.push({
+        role: "model",
+        parts: [{ text: MENSAJE_BIENVENIDA }]
+      });
+      guardarHistorial();
+      pintarMensaje("model", MENSAJE_BIENVENIDA);
+    }
+
     actualizarEstadoEnviar();
+    iniciarCoreografiaVisual();
   }
 
   iniciar();
 })();
-
 UA_CHAT_JS;
 }

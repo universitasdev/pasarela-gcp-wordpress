@@ -39,7 +39,7 @@
   /** Curso LearnDash Actas de Entrega — clave de persistencia por curso */
   var UA_CHAT_COURSE_ID = 46067;
   var UA_CHAT_STORAGE_KEY = "ua-chat-history-" + UA_CHAT_COURSE_ID;
-  var UA_CHAT_MAX_MENSAJES = 80;
+  var UA_CHAT_MAX_MENSAJES = 24;
 
   var estaCargando = false;
 
@@ -118,7 +118,7 @@
     return historial.slice(historial.length - UA_CHAT_MAX_MENSAJES);
   }
 
-  /** Guarda chatHistory en localStorage (máx. 80 mensajes). */
+  /** Guarda chatHistory en localStorage (máx. 24 mensajes). */
   function guardarHistorial() {
     try {
       chatHistory = recortarHistorial(chatHistory);
@@ -374,10 +374,10 @@
       pintarMensaje("model", respuesta);
     } catch (error) {
       quitarTyping(typing);
-      pintarMensaje(
-        "model",
-        "Lo siento, no pude procesar tu mensaje. Inténtalo de nuevo en unos segundos."
-      );
+      var mensajeError = (error && error.message)
+        ? error.message
+        : "Lo siento, no pude procesar tu mensaje. Inténtalo de nuevo en unos segundos.";
+      pintarMensaje("model", mensajeError);
     } finally {
       estaCargando = false;
       actualizarEstadoEnviar();

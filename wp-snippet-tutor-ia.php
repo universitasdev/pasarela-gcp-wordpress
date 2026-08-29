@@ -6,8 +6,6 @@
  *   - AJAX: nonce + LearnDash + POST al BFF
  *   - wp_footer: inyecta CSS/HTML/JS solo en el curso UA_CHAT_COURSE_ID
  *
- * Frontend actualizado: FAB azul, softPulse, tooltip, localStorage (N=80).
- *
  * El frontend envía POST a admin-ajax.php con:
  *   action  = ua_chat_send_message
  *   nonce   = window.uaChatConfig.nonce
@@ -80,7 +78,10 @@ function ua_chat_handle_send_message() {
 	$texto = ua_chat_consultar_bff( $mensaje, get_current_user_id() );
 	if ( is_wp_error( $texto ) ) {
 		ua_chat_log_error( 'bff', $texto->get_error_message() );
-		wp_send_json_error( array( 'message' => 'Error comunicando con el servidor IA' ), 500 );
+		wp_send_json_error(
+			array( 'message' => ua_chat_mensaje_amigable( $texto ) ),
+			500
+		);
 	}
 
 	wp_send_json_success( array( 'text' => $texto ) );
@@ -140,7 +141,7 @@ function ua_chat_sanitizar_historial( $raw ) {
 	}
 
 	$limpio    = array();
-	$max_items = 40;
+	$max_items = 24;
 	$max_chars = 8000;
 
 	foreach ( $raw as $item ) {
@@ -205,6 +206,54 @@ function ua_chat_extraer_texto_mensaje( $item ) {
  * 4. Llamada al BFF (Cloud Run)
  * ============================================================================= */
 
+/**
+ * Traduce errores técnicos del BFF a mensajes amigables para el alumno.
+ * El detalle técnico queda solo en ua_chat_log_error() (WP_DEBUG).
+ *
+ * @param WP_Error $error
+ * @return string
+ */
+function ua_chat_mensaje_amigable( WP_Error $error ) {
+	$msg  = strtolower( $error->get_error_message() );
+	$code = $error->get_error_code();
+
+	if (
+		false !== strpos( $msg, 'timeout' ) ||
+		false !== strpos( $msg, 'timed out' ) ||
+		false !== strpos( $msg, 'curl error 28' )
+	) {
+		return 'El tutor está tardando más de lo habitual. Intenta de nuevo en unos segundos o haz una pregunta más específica.';
+	}
+
+	if (
+		false !== strpos( $msg, '429' ) ||
+		false !== strpos( $msg, 'resource_exhausted' ) ||
+		false !== strpos( $msg, '503' ) ||
+		false !== strpos( $msg, '504' )
+	) {
+		return 'Tu consulta es muy amplia. ¿Podrías indicar el módulo o el tema concreto?';
+	}
+
+	if (
+		'ua_chat_bff_empty' === $code ||
+		false !== strpos( $msg, 'sin texto usable' ) ||
+		false !== strpos( $msg, 'respuesta vacía' ) ||
+		false !== strpos( $msg, 'respuesta del bff vacía' )
+	) {
+		return 'No recibí una respuesta del tutor. Intenta reformular tu pregunta.';
+	}
+
+	if (
+		false !== strpos( $msg, 'http 4' ) ||
+		false !== strpos( $msg, 'http 5' ) ||
+		false !== strpos( $msg, 'bff rechazó' )
+	) {
+		return 'No pude conectar con el tutor en este momento. Intenta de nuevo en unos segundos.';
+	}
+
+	return 'No pude conectar con el tutor en este momento. Intenta de nuevo en unos segundos.';
+}
+
 function ua_chat_consultar_bff( $mensaje, $user_id ) {
 	$session_id = 'wp-' . (int) $user_id;
 
@@ -226,7 +275,7 @@ function ua_chat_consultar_bff( $mensaje, $user_id ) {
 	);
 
 	if ( is_wp_error( $response ) ) {
-		return new WP_Error( 'ua_chat_bff', $response->get_error_message() );
+		return new WP_Error( 'ua_chat_bff_transport', $response->get_error_message() );
 	}
 
 	$code    = (int) wp_remote_retrieve_response_code( $response );
@@ -237,14 +286,22 @@ function ua_chat_consultar_bff( $mensaje, $user_id ) {
 		$detalle = is_array( $decoded ) && isset( $decoded['detail'] )
 			? (string) $decoded['detail']
 			: ( 'HTTP ' . $code );
-		return new WP_Error( 'ua_chat_bff', 'BFF rechazó la petición: ' . $detalle );
+		return new WP_Error(
+			'ua_chat_bff',
+			'BFF rechazó la petición: HTTP ' . $code . ' — ' . $detalle
+		);
 	}
 
 	if ( ! is_array( $decoded ) || empty( $decoded['response'] ) || ! is_string( $decoded['response'] ) ) {
-		return new WP_Error( 'ua_chat_bff', 'Respuesta del BFF sin texto usable' );
+		return new WP_Error( 'ua_chat_bff_empty', 'Respuesta del BFF sin texto usable' );
 	}
 
-	return trim( $decoded['response'] );
+	$texto = trim( $decoded['response'] );
+	if ( '' === $texto ) {
+		return new WP_Error( 'ua_chat_bff_empty', 'Respuesta del BFF vacía' );
+	}
+
+	return $texto;
 }
 
 /* =============================================================================
@@ -287,6 +344,7 @@ function ua_chat_widget_css() {
    sin heredar ni contaminar estilos globales del tema o LMS.
    ============================================================ */
 
+/* Página de prueba local (no forma parte del widget inyectable) */
 
 
 /* ---------- Contenedor principal (z-index supremo) ---------- */
@@ -922,7 +980,7 @@ function ua_chat_widget_js() {
   /** Curso LearnDash Actas de Entrega — clave de persistencia por curso */
   var UA_CHAT_COURSE_ID = 46067;
   var UA_CHAT_STORAGE_KEY = "ua-chat-history-" + UA_CHAT_COURSE_ID;
-  var UA_CHAT_MAX_MENSAJES = 80;
+  var UA_CHAT_MAX_MENSAJES = 24;
 
   var estaCargando = false;
 
@@ -1001,7 +1059,7 @@ function ua_chat_widget_js() {
     return historial.slice(historial.length - UA_CHAT_MAX_MENSAJES);
   }
 
-  /** Guarda chatHistory en localStorage (máx. 80 mensajes). */
+  /** Guarda chatHistory en localStorage (máx. 24 mensajes). */
   function guardarHistorial() {
     try {
       chatHistory = recortarHistorial(chatHistory);
@@ -1078,10 +1136,6 @@ function ua_chat_widget_js() {
       .replace(/'/g, "&#39;");
   }
 
-  /**
-   * Convierte markdown básico a HTML seguro:
-   * **negrita** → <strong> y saltos de línea \n → <br>
-   */
   /**
    * Convierte markdown básico a HTML seguro para la burbuja:
    * - # / ## / ### títulos → estilo de encabezado (sin mostrar #)
@@ -1261,10 +1315,10 @@ function ua_chat_widget_js() {
       pintarMensaje("model", respuesta);
     } catch (error) {
       quitarTyping(typing);
-      pintarMensaje(
-        "model",
-        "Lo siento, no pude procesar tu mensaje. Inténtalo de nuevo en unos segundos."
-      );
+      var mensajeError = (error && error.message)
+        ? error.message
+        : "Lo siento, no pude procesar tu mensaje. Inténtalo de nuevo en unos segundos.";
+      pintarMensaje("model", mensajeError);
     } finally {
       estaCargando = false;
       actualizarEstadoEnviar();

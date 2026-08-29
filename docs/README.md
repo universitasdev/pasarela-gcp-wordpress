@@ -75,7 +75,7 @@ Un widget flotante (FAB) namespaced (`ua-chat-*`) que:
 │  Navegador (alumno)                                         │
 │  ┌───────────────────────────────────────────────────────┐  │
 │  │ Widget ua-chat (HTML + CSS + JS vanilla)              │  │
-│  │  • Historial localStorage (máx. 80 msgs)              │  │
+│  │  • Historial localStorage (máx. 24 msgs)              │  │
 │  │  • Markdown ligero en burbujas                        │  │
 │  │  • FAB + tooltip + softPulse                          │  │
 │  └─────────────────────────┬─────────────────────────────┘  │
@@ -177,9 +177,9 @@ pasarela-gcp-wp/
 LearnDash recarga la página en cada paso (tema → cuestionario → material). El array en memoria se pierde.
 
 - Clave: `ua-chat-history-46067`
-- Tope: **80** mensajes (los más recientes)
+- Tope: **24** mensajes (los más recientes)
 - Al iniciar: si hay guardado, se restaura; si no, mensaje de bienvenida
-- Los errores genéricos de red **no** se guardan en el historial
+- Los errores de red **no** se guardan en el historial ni en `localStorage`
 
 
 
@@ -253,7 +253,25 @@ add_action( 'wp_footer', 'ua_chat_inyectar_widget_curso', 20 );
 4. Sanitizar `history` (roles `user`/`model`, límites de ítems/caracteres)
 5. Extraer último mensaje del usuario
 6. `ua_chat_consultar_bff( $mensaje, $user_id )`
-7. `wp_send_json_success( [ 'text' => $texto ] )` o error 500 limpio
+7. `wp_send_json_success( [ 'text' => $texto ] )` o error 500 con mensaje amigable (`ua_chat_mensaje_amigable`)
+
+
+
+### Graceful fallback (errores BFF)
+
+La función `ua_chat_mensaje_amigable( WP_Error $error )` traduce fallos del BFF a texto útil para el alumno. El detalle técnico solo va a `error_log` si `WP_DEBUG` está activo.
+
+| Condición (mensaje/código interno) | Mensaje al alumno |
+|-----------------------------------|-------------------|
+| `timeout`, `timed out`, `cURL error 28` | El tutor está tardando más de lo habitual. Intenta de nuevo en unos segundos o haz una pregunta más específica. |
+| `429`, `RESOURCE_EXHAUSTED`, `503`, `504` | Tu consulta es muy amplia. ¿Podrías indicar el módulo o el tema concreto? |
+| `ua_chat_bff_empty`, respuesta vacía | No recibí una respuesta del tutor. Intenta reformular tu pregunta. |
+| HTTP 4xx/5xx del BFF | No pude conectar con el tutor en este momento. Intenta de nuevo en unos segundos. |
+| Cualquier otro error | Mismo mensaje genérico de conexión |
+
+En el frontend, `enviarMensaje` muestra `error.message` del JSON (no el texto fijo *"Lo siento, no pude procesar..."* salvo fallback local).
+
+PHP sanitiza como máximo **24** ítems en `ua_chat_sanitizar_historial` (`$max_items = 24`).
 
 
 
@@ -395,7 +413,8 @@ Constantes JS (frontend):
 | ---------------------- | ----------------------- | -------------------------------- |
 | `UA_CHAT_COURSE_ID`    | `46067`                 | Alineado con PHP (clave storage) |
 | `UA_CHAT_STORAGE_KEY`  | `ua-chat-history-46067` | Clave `localStorage`             |
-| `UA_CHAT_MAX_MENSAJES` | `80`                    | Tope de historial en UI          |
+| `UA_CHAT_MAX_MENSAJES` | `24`                    | Tope de historial en UI          |
+| PHP `$max_items`       | `24`                    | Tope al sanitizar historial AJAX |
 
 
 Colores corporativos principales: `#03035b` (azul Universitas), texto blanco en cabecera/FAB, fondo de mensajes `#e7e7e7`.
@@ -425,10 +444,10 @@ Respuesta OK:
 { "success": true, "data": { "text": "Respuesta del agente..." } }
 ```
 
-Respuesta error:
+Respuesta error (mensaje amigable según el fallo):
 
 ```json
-{ "success": false, "data": { "message": "Error comunicando con el servidor IA" } }
+{ "success": false, "data": { "message": "No pude conectar con el tutor en este momento. Intenta de nuevo en unos segundos." } }
 ```
 
 
@@ -491,9 +510,9 @@ Respuesta esperada del BFF:
 | -------------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------- |
 | WPCode: `unexpected token , expecting ;`     | Nowdoc mal formado (contenido en la misma línea que `<<<`) | Verificar saltos de línea en `UA_CHAT_CSS/HTML/JS`               |
 | Widget no aparece                            | No logueado, sin matrícula, o no estás en el curso 46067   | Revisar `ua_chat_debe_mostrar_widget`                            |
+| AJAX: mensaje amigable del tutor (timeout, BFF caído, etc.) | Fallo en `ua_chat_consultar_bff` | Revisar `[UA Chat][bff]` en error_log con `WP_DEBUG`; mensaje al alumno ya es legible |
 | AJAX: "Error de seguridad"                   | Nonce / sesión                                             | Recargar página logueado                                         |
 | AJAX: "No estás inscrito…"                   | LearnDash sin acceso                                       | Matricular usuario de prueba                                     |
-| AJAX: "Error comunicando con el servidor IA" | BFF caído, timeout, red saliente, payload                  | Logs WP (`WP_DEBUG`), respuesta HTTP del BFF                     |
 | Historial se pierde                          | Otro navegador/dispositivo o clave distinta                | Verificar `ua-chat-history-46067` en Application → Local Storage |
 | Next tapado                                  | Snippet viejo sin `ua-chat-en-quiz`                        | Actualizar snippet                                               |
 | Chat cortado en quiz                         | Falta regla `max-height` de quiz                           | Actualizar CSS del snippet                                       |
@@ -541,10 +560,17 @@ Respuesta esperada del BFF:
 
 
 
+### Sesión 29 agosto 2026 (staging)
+
+- Graceful fallback BFF (`ua_chat_mensaje_amigable`).
+- Historial acotado a **24** mensajes (JS + PHP).
+- JS muestra `error.message` del servidor en burbujas de error.
+- Plan: [PLAN-graceful-fallback-staging.md](PLAN-graceful-fallback-staging.md).
+
 ### Sesión 20 agosto 2026 (resumen)
 
 - Coreografía FAB (pulso, tooltip, colores).
-- `localStorage` N=80.
+- `localStorage` (inicialmente N=80; reducido a 24 en sesión 29/08).
 - Snippet unificado + fix nowdocs WPCode.
 - Markdown headings/listas.
 - UX quizzes: `bottom` + `max-height` + tooltip diferenciado.
