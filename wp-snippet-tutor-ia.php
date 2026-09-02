@@ -7,9 +7,10 @@
  *   - wp_footer: inyecta CSS/HTML/JS solo en el curso UA_CHAT_COURSE_ID
  *
  * El frontend envía POST a admin-ajax.php con:
- *   action  = ua_chat_send_message
- *   nonce   = window.uaChatConfig.nonce
- *   history = JSON [{ role, parts: [{ text }] }, ...]
+ *   action     = ua_chat_send_message
+ *   nonce      = window.uaChatConfig.nonce
+ *   history    = JSON [{ role, parts: [{ text }] }, ...]
+ *   session_id = wp-{userId}-{timestamp}
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -75,7 +76,12 @@ function ua_chat_handle_send_message() {
 		wp_send_json_error( array( 'message' => 'Error de seguridad' ), 400 );
 	}
 
-	$texto = ua_chat_consultar_bff( $mensaje, get_current_user_id() );
+	$session_id = ua_chat_resolver_session_id(
+		isset( $_POST['session_id'] ) ? wp_unslash( $_POST['session_id'] ) : '',
+		get_current_user_id()
+	);
+
+	$texto = ua_chat_consultar_bff( $mensaje, $session_id );
 	if ( is_wp_error( $texto ) ) {
 		ua_chat_log_error( 'bff', $texto->get_error_message() );
 		wp_send_json_error(
@@ -254,9 +260,37 @@ function ua_chat_mensaje_amigable( WP_Error $error ) {
 	return 'No pude conectar con el tutor en este momento. Intenta de nuevo en unos segundos.';
 }
 
-function ua_chat_consultar_bff( $mensaje, $user_id ) {
-	$session_id = 'wp-' . (int) $user_id;
+/**
+ * Valida session_id del cliente o genera uno seguro.
+ * Formato aceptado: wp-{userId}-{timestamp} (solo dígitos en el stamp).
+ * Si falta o no pertenece al usuario autenticado, crea wp-{userId}-{time()}.
+ *
+ * @param mixed $raw
+ * @param int   $user_id
+ * @return string
+ */
+function ua_chat_resolver_session_id( $raw, $user_id ) {
+	$user_id = (int) $user_id;
+	$prefix  = 'wp-' . $user_id . '-';
+	$candidato = is_string( $raw ) ? trim( $raw ) : '';
 
+	if (
+		'' !== $candidato
+		&& 0 === strpos( $candidato, $prefix )
+		&& preg_match( '/^wp-\d+-\d{10,16}$/', $candidato )
+	) {
+		return $candidato;
+	}
+
+	return $prefix . (string) time();
+}
+
+/**
+ * @param string $mensaje
+ * @param string $session_id Ya validado (wp-{userId}-{timestamp}).
+ * @return string|WP_Error
+ */
+function ua_chat_consultar_bff( $mensaje, $session_id ) {
 	$response = wp_remote_post(
 		UA_CHAT_BFF_URL,
 		array(
@@ -318,6 +352,7 @@ function ua_chat_inyectar_widget_curso() {
 		'ajaxUrl' => admin_url( 'admin-ajax.php' ),
 		'nonce'   => wp_create_nonce( UA_CHAT_NONCE_ACTION ),
 		'action'  => 'ua_chat_send_message',
+		'userId'  => (int) get_current_user_id(),
 	);
 
 	echo '<script>window.uaChatConfig=' . wp_json_encode( $config ) . ';</script>' . "\n";
@@ -492,6 +527,14 @@ function ua_chat_widget_css() {
   color: rgba(255, 255, 255, 0.82);
 }
 
+.ua-chat-header-actions {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.ua-chat-new,
 .ua-chat-close {
   flex-shrink: 0;
   display: inline-flex;
@@ -505,13 +548,20 @@ function ua_chat_widget_css() {
   background: transparent;
   color: #ffffff;
   cursor: pointer;
-  transition: background 0.15s ease;
+  transition: background 0.15s ease, opacity 0.15s ease;
 }
 
+.ua-chat-new:hover,
+.ua-chat-new:focus-visible,
 .ua-chat-close:hover,
 .ua-chat-close:focus-visible {
   background: rgba(255, 255, 255, 0.12);
   outline: none;
+}
+
+.ua-chat-new:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* ---------- Área de mensajes ---------- */
@@ -890,12 +940,23 @@ function ua_chat_widget_html() {
             <p class="ua-chat-subtitle">Tu asistente virtual</p>
           </div>
         </div>
-        <button type="button" class="ua-chat-close" aria-label="Cerrar chat">
-          <!-- Icono de cierre (X) -->
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-            <path d="M18 6L6 18M6 6l12 12"/>
-          </svg>
-        </button>
+        <div class="ua-chat-header-actions">
+          <button type="button" class="ua-chat-new" aria-label="Nueva conversación" title="Nueva conversación">
+            <!-- Icono refresh: reinicia historial + session_id -->
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 2v6h-6"/>
+              <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
+              <path d="M3 22v-6h6"/>
+              <path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+            </svg>
+          </button>
+          <button type="button" class="ua-chat-close" aria-label="Cerrar chat">
+            <!-- Icono de cierre (X) -->
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M18 6L6 18M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
       </header>
 
       <div class="ua-chat-messages" role="log" aria-label="Historial de mensajes"></div>
@@ -956,6 +1017,7 @@ function ua_chat_widget_js() {
   var botonEnviar = document.querySelector(".ua-chat-send");
   var botonFlotante = document.querySelector(".ua-chat-btn");
   var botonCerrar = document.querySelector(".ua-chat-close");
+  var botonNueva = document.querySelector(".ua-chat-new");
   var tooltip = document.getElementById("ua-chat-tooltip");
 
   if (!widget || !ventana || !areaMensajes || !formulario || !campo) {
@@ -980,7 +1042,11 @@ function ua_chat_widget_js() {
   /** Curso LearnDash Actas de Entrega — clave de persistencia por curso */
   var UA_CHAT_COURSE_ID = 46067;
   var UA_CHAT_STORAGE_KEY = "ua-chat-history-" + UA_CHAT_COURSE_ID;
+  var UA_CHAT_SESSION_KEY = "ua-chat-session-" + UA_CHAT_COURSE_ID;
   var UA_CHAT_MAX_MENSAJES = 24;
+
+  /** session_id dinámico: wp-{userId}-{timestamp} (persistido entre páginas) */
+  var sessionId = null;
 
   var estaCargando = false;
 
@@ -1043,6 +1109,52 @@ function ua_chat_widget_js() {
   /* ============================================================
      Persistencia localStorage (sobrevive al cambiar de página)
      ============================================================ */
+
+  /**
+   * Construye session_id: wp-{userId}-{timestamp}.
+   * userId viene de uaChatConfig (inyectado por PHP); fallback "0" en local.
+   * @returns {string}
+   */
+  function crearSessionId() {
+    var userId = 0;
+    if (
+      typeof window.uaChatConfig !== "undefined" &&
+      window.uaChatConfig.userId
+    ) {
+      userId = parseInt(window.uaChatConfig.userId, 10) || 0;
+    }
+    return "wp-" + userId + "-" + Date.now();
+  }
+
+  /** Guarda sessionId en localStorage. */
+  function guardarSessionId() {
+    try {
+      if (sessionId) {
+        window.localStorage.setItem(UA_CHAT_SESSION_KEY, sessionId);
+      }
+    } catch (error) {
+      /* Quota o modo privado */
+    }
+  }
+
+  /**
+   * Carga sessionId guardado o crea uno nuevo.
+   * @returns {string}
+   */
+  function obtenerOCrearSessionId() {
+    try {
+      var guardado = window.localStorage.getItem(UA_CHAT_SESSION_KEY);
+      if (guardado && /^wp-\d+-\d{10,16}$/.test(guardado)) {
+        return guardado;
+      }
+    } catch (error) {
+      /* ignore */
+    }
+    var nuevo = crearSessionId();
+    sessionId = nuevo;
+    guardarSessionId();
+    return nuevo;
+  }
 
   /**
    * Recorta el historial a los últimos N mensajes.
@@ -1254,6 +1366,7 @@ function ua_chat_widget_js() {
     formData.append("action", window.uaChatConfig.action);
     formData.append("nonce", window.uaChatConfig.nonce);
     formData.append("history", JSON.stringify(history));
+    formData.append("session_id", sessionId || obtenerOCrearSessionId());
 
     var response = await fetch(window.uaChatConfig.ajaxUrl, {
       method: "POST",
@@ -1327,8 +1440,45 @@ function ua_chat_widget_js() {
   }
 
   /* ============================================================
-     Abrir / cerrar widget
+     Abrir / cerrar / nueva conversación
      ============================================================ */
+
+  /**
+   * Limpia UI + localStorage y genera un session_id nuevo para Vertex.
+   */
+  function iniciarNuevaConversacion() {
+    if (estaCargando) {
+      return;
+    }
+
+    var confirmar = window.confirm(
+      "¿Iniciar una nueva conversación? Se borrará el historial visible de este chat."
+    );
+    if (!confirmar) {
+      return;
+    }
+
+    try {
+      window.localStorage.removeItem(UA_CHAT_STORAGE_KEY);
+    } catch (error) {
+      /* ignore */
+    }
+
+    sessionId = crearSessionId();
+    guardarSessionId();
+
+    chatHistory = [];
+    areaMensajes.innerHTML = "";
+
+    chatHistory.push({
+      role: "model",
+      parts: [{ text: MENSAJE_BIENVENIDA }]
+    });
+    guardarHistorial();
+    pintarMensaje("model", MENSAJE_BIENVENIDA);
+    actualizarEstadoEnviar();
+    campo.focus();
+  }
 
   function estaAbierto() {
     return widget.classList.contains("ua-chat-open");
@@ -1394,6 +1544,9 @@ function ua_chat_widget_js() {
 
   botonFlotante.addEventListener("click", alternarChat);
   botonCerrar.addEventListener("click", cerrarChat);
+  if (botonNueva) {
+    botonNueva.addEventListener("click", iniciarNuevaConversacion);
+  }
 
   formulario.addEventListener("submit", function (evento) {
     evento.preventDefault();
@@ -1448,6 +1601,8 @@ function ua_chat_widget_js() {
 
   function iniciar() {
     aplicarContextoPagina();
+
+    sessionId = obtenerOCrearSessionId();
 
     var guardado = cargarHistorialGuardado();
 

@@ -94,7 +94,7 @@ Un widget flotante (FAB) namespaced (`ua-chat-*`) que:
 │    solo si learndash_get_course_id() === COURSE_ID          │
 └─────────────────────────────┬───────────────────────────────┘
                               │ POST JSON
-                              │ { message, session_id: "wp-{uid}" }
+                              │ { message, session_id: "wp-{uid}-{ts}" }
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  BFF Cloud Run (GCP)                                        │
@@ -176,7 +176,8 @@ pasarela-gcp-wp/
 
 LearnDash recarga la página en cada paso (tema → cuestionario → material). El array en memoria se pierde.
 
-- Clave: `ua-chat-history-46067`
+- Clave historial: `ua-chat-history-46067`
+- Clave sesión Vertex: `ua-chat-session-46067` (`wp-{userId}-{timestamp}`)
 - Tope: **24** mensajes (los más recientes)
 - Al iniciar: si hay guardado, se restaura; si no, mensaje de bienvenida
 - Los errores de red **no** se guardan en el historial ni en `localStorage`
@@ -412,7 +413,8 @@ Constantes JS (frontend):
 | Variable               | Valor                   | Descripción                      |
 | ---------------------- | ----------------------- | -------------------------------- |
 | `UA_CHAT_COURSE_ID`    | `46067`                 | Alineado con PHP (clave storage) |
-| `UA_CHAT_STORAGE_KEY`  | `ua-chat-history-46067` | Clave `localStorage`             |
+| `UA_CHAT_STORAGE_KEY`  | `ua-chat-history-46067` | Historial en `localStorage`      |
+| `UA_CHAT_SESSION_KEY`  | `ua-chat-session-46067` | `session_id` Vertex persistido   |
 | `UA_CHAT_MAX_MENSAJES` | `24`                    | Tope de historial en UI          |
 | PHP `$max_items`       | `24`                    | Tope al sanitizar historial AJAX |
 
@@ -457,7 +459,7 @@ Respuesta error (mensaje amigable según el fallo):
 ```json
 {
   "message": "texto del último mensaje del usuario",
-  "session_id": "wp-123"
+  "session_id": "wp-123-1718293812"
 }
 ```
 
@@ -469,7 +471,7 @@ Respuesta esperada del BFF:
 }
 ```
 
-`session_id` = `"wp-" + user_id` de WordPress, para continuidad de conversación en el agente.
+`session_id` = `"wp-" + user_id + "-" + timestamp` (generado en el frontend, validado en PHP). Botón «Nueva conversación» regenera el ID y limpia `localStorage`.
 
 ---
 
@@ -496,8 +498,8 @@ Respuesta esperada del BFF:
 ### Historial vs sesión BFF
 
 - UI: `localStorage` (dispositivo).
-- Agente: `session_id` en servidor.
-- Limpiar solo el storage del navegador no necesariamente reinicia la memoria del agente (y viceversa). Roadmap: botón «Nueva conversación» coordinado.
+- Agente: `session_id` dinámico (`wp-{uid}-{ts}`), persistido en `ua-chat-session-46067`.
+- Botón «Nueva conversación» limpia historial UI + regenera `session_id` (resetea memoria Vertex).
 
 ---
 
@@ -530,7 +532,7 @@ Respuesta esperada del BFF:
 ### Limitaciones actuales
 
 - Historial UI no es multi-dispositivo.
-- Un `session_id` por usuario WP (no por curso/conversación explícita en BFF).
+- Un `session_id` por conversación (`wp-{uid}-{ts}`); se reutiliza entre páginas hasta «Nueva conversación».
 - Markdown del frontend es un subconjunto (no tablas, no código fence completo).
 - Dependencia de selectores LearnDash/BuddyBoss para detectar quizzes.
 
@@ -538,7 +540,7 @@ Respuesta esperada del BFF:
 
 ### Roadmap sugerido
 
-1. Botón «Nueva conversación» (limpia `localStorage` + nuevo `session_id`).
+1. ~~Botón «Nueva conversación»~~ (implementado: limpia historial + nuevo `session_id`).
 2. Persistencia servidor (`user_meta` o API del BFF) alineada con la UI.
 3. Prompt del agente: evitar encabezados `#` (refuerzo al render).
 4. Empaquetar como mu-plugin versionado en lugar de solo WPCode.

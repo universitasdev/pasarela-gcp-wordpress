@@ -152,6 +152,14 @@
   color: rgba(255, 255, 255, 0.82);
 }
 
+.ua-chat-header-actions {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.ua-chat-new,
 .ua-chat-close {
   flex-shrink: 0;
   display: inline-flex;
@@ -165,13 +173,20 @@
   background: transparent;
   color: #ffffff;
   cursor: pointer;
-  transition: background 0.15s ease;
+  transition: background 0.15s ease, opacity 0.15s ease;
 }
 
+.ua-chat-new:hover,
+.ua-chat-new:focus-visible,
 .ua-chat-close:hover,
 .ua-chat-close:focus-visible {
   background: rgba(255, 255, 255, 0.12);
   outline: none;
+}
+
+.ua-chat-new:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* ---------- Área de mensajes ---------- */

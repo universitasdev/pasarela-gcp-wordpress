@@ -15,6 +15,7 @@
   var botonEnviar = document.querySelector(".ua-chat-send");
   var botonFlotante = document.querySelector(".ua-chat-btn");
   var botonCerrar = document.querySelector(".ua-chat-close");
+  var botonNueva = document.querySelector(".ua-chat-new");
   var tooltip = document.getElementById("ua-chat-tooltip");
 
   if (!widget || !ventana || !areaMensajes || !formulario || !campo) {
@@ -39,7 +40,11 @@
   /** Curso LearnDash Actas de Entrega — clave de persistencia por curso */
   var UA_CHAT_COURSE_ID = 46067;
   var UA_CHAT_STORAGE_KEY = "ua-chat-history-" + UA_CHAT_COURSE_ID;
+  var UA_CHAT_SESSION_KEY = "ua-chat-session-" + UA_CHAT_COURSE_ID;
   var UA_CHAT_MAX_MENSAJES = 24;
+
+  /** session_id dinámico: wp-{userId}-{timestamp} (persistido entre páginas) */
+  var sessionId = null;
 
   var estaCargando = false;
 
@@ -102,6 +107,52 @@
   /* ============================================================
      Persistencia localStorage (sobrevive al cambiar de página)
      ============================================================ */
+
+  /**
+   * Construye session_id: wp-{userId}-{timestamp}.
+   * userId viene de uaChatConfig (inyectado por PHP); fallback "0" en local.
+   * @returns {string}
+   */
+  function crearSessionId() {
+    var userId = 0;
+    if (
+      typeof window.uaChatConfig !== "undefined" &&
+      window.uaChatConfig.userId
+    ) {
+      userId = parseInt(window.uaChatConfig.userId, 10) || 0;
+    }
+    return "wp-" + userId + "-" + Date.now();
+  }
+
+  /** Guarda sessionId en localStorage. */
+  function guardarSessionId() {
+    try {
+      if (sessionId) {
+        window.localStorage.setItem(UA_CHAT_SESSION_KEY, sessionId);
+      }
+    } catch (error) {
+      /* Quota o modo privado */
+    }
+  }
+
+  /**
+   * Carga sessionId guardado o crea uno nuevo.
+   * @returns {string}
+   */
+  function obtenerOCrearSessionId() {
+    try {
+      var guardado = window.localStorage.getItem(UA_CHAT_SESSION_KEY);
+      if (guardado && /^wp-\d+-\d{10,16}$/.test(guardado)) {
+        return guardado;
+      }
+    } catch (error) {
+      /* ignore */
+    }
+    var nuevo = crearSessionId();
+    sessionId = nuevo;
+    guardarSessionId();
+    return nuevo;
+  }
 
   /**
    * Recorta el historial a los últimos N mensajes.
@@ -313,6 +364,7 @@
     formData.append("action", window.uaChatConfig.action);
     formData.append("nonce", window.uaChatConfig.nonce);
     formData.append("history", JSON.stringify(history));
+    formData.append("session_id", sessionId || obtenerOCrearSessionId());
 
     var response = await fetch(window.uaChatConfig.ajaxUrl, {
       method: "POST",
@@ -386,8 +438,45 @@
   }
 
   /* ============================================================
-     Abrir / cerrar widget
+     Abrir / cerrar / nueva conversación
      ============================================================ */
+
+  /**
+   * Limpia UI + localStorage y genera un session_id nuevo para Vertex.
+   */
+  function iniciarNuevaConversacion() {
+    if (estaCargando) {
+      return;
+    }
+
+    var confirmar = window.confirm(
+      "¿Iniciar una nueva conversación? Se borrará el historial visible de este chat."
+    );
+    if (!confirmar) {
+      return;
+    }
+
+    try {
+      window.localStorage.removeItem(UA_CHAT_STORAGE_KEY);
+    } catch (error) {
+      /* ignore */
+    }
+
+    sessionId = crearSessionId();
+    guardarSessionId();
+
+    chatHistory = [];
+    areaMensajes.innerHTML = "";
+
+    chatHistory.push({
+      role: "model",
+      parts: [{ text: MENSAJE_BIENVENIDA }]
+    });
+    guardarHistorial();
+    pintarMensaje("model", MENSAJE_BIENVENIDA);
+    actualizarEstadoEnviar();
+    campo.focus();
+  }
 
   function estaAbierto() {
     return widget.classList.contains("ua-chat-open");
@@ -453,6 +542,9 @@
 
   botonFlotante.addEventListener("click", alternarChat);
   botonCerrar.addEventListener("click", cerrarChat);
+  if (botonNueva) {
+    botonNueva.addEventListener("click", iniciarNuevaConversacion);
+  }
 
   formulario.addEventListener("submit", function (evento) {
     evento.preventDefault();
@@ -507,6 +599,8 @@
 
   function iniciar() {
     aplicarContextoPagina();
+
+    sessionId = obtenerOCrearSessionId();
 
     var guardado = cargarHistorialGuardado();
 
