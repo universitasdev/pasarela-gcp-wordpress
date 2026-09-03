@@ -649,6 +649,73 @@ function ua_chat_widget_css() {
   color: inherit;
 }
 
+/* Confirmación inline: nueva conversación */
+.ua-chat-confirm {
+  max-width: 92%;
+  padding: 12px 14px;
+  background: #ffffff;
+  color: #1a1a1a;
+  border-radius: 16px 16px 16px 4px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  border-left: 3px solid #03035b;
+}
+
+.ua-chat-confirm-text {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #1a1a1a;
+}
+
+.ua-chat-confirm-text strong {
+  font-weight: 700;
+}
+
+.ua-chat-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.ua-chat-confirm-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+
+.ua-chat-confirm-cancel {
+  border: 1px solid #c8c8d0;
+  background: transparent;
+  color: #4a4a55;
+}
+
+.ua-chat-confirm-cancel:hover,
+.ua-chat-confirm-cancel:focus-visible {
+  background: #f0f0f5;
+  outline: none;
+}
+
+.ua-chat-confirm-ok {
+  border: 0;
+  background: #03035b;
+  color: #ffffff;
+}
+
+.ua-chat-confirm-ok:hover,
+.ua-chat-confirm-ok:focus-visible {
+  background: #05057a;
+  outline: none;
+}
+
 /* Indicador de escritura (3 puntitos) */
 .ua-chat-typing {
   display: inline-flex;
@@ -1443,18 +1510,90 @@ function ua_chat_widget_js() {
      Abrir / cerrar / nueva conversación
      ============================================================ */
 
+  /** Quita la burbuja de confirmación si existe (no toca el historial). */
+  function quitarConfirmacionNueva() {
+    var existente = areaMensajes.querySelector(".ua-chat-confirm-row");
+    if (existente && existente.parentNode) {
+      existente.parentNode.removeChild(existente);
+    }
+    if (botonNueva) {
+      botonNueva.disabled = false;
+    }
+  }
+
   /**
-   * Limpia UI + localStorage y genera un session_id nuevo para Vertex.
+   * Muestra una burbuja de confirmación dentro del chat (sin window.confirm).
+   * No se guarda en localStorage.
    */
-  function iniciarNuevaConversacion() {
+  function mostrarConfirmacionNuevaConversacion() {
     if (estaCargando) {
       return;
     }
 
-    var confirmar = window.confirm(
-      "¿Iniciar una nueva conversación? Se borrará el historial visible de este chat."
-    );
-    if (!confirmar) {
+    if (!estaAbierto()) {
+      abrirChat();
+    }
+
+    quitarConfirmacionNueva();
+
+    var fila = document.createElement("div");
+    fila.className = "ua-chat-row ua-chat-row-bot ua-chat-confirm-row";
+
+    var caja = document.createElement("div");
+    caja.className = "ua-chat-confirm";
+    caja.setAttribute("role", "group");
+    caja.setAttribute("aria-label", "Confirmar nueva conversación");
+
+    var texto = document.createElement("p");
+    texto.className = "ua-chat-confirm-text";
+    texto.innerHTML =
+      "<strong>¿Iniciar una nueva conversación?</strong><br>" +
+      "Se borrará el historial visible de este chat.";
+
+    var acciones = document.createElement("div");
+    acciones.className = "ua-chat-confirm-actions";
+
+    var btnCancelar = document.createElement("button");
+    btnCancelar.type = "button";
+    btnCancelar.className = "ua-chat-confirm-btn ua-chat-confirm-cancel";
+    btnCancelar.textContent = "Cancelar";
+
+    var btnOk = document.createElement("button");
+    btnOk.type = "button";
+    btnOk.className = "ua-chat-confirm-btn ua-chat-confirm-ok";
+    btnOk.textContent = "Sí, empezar nueva";
+
+    btnCancelar.addEventListener("click", function () {
+      quitarConfirmacionNueva();
+      campo.focus();
+    });
+
+    btnOk.addEventListener("click", function () {
+      ejecutarNuevaConversacion();
+    });
+
+    acciones.appendChild(btnCancelar);
+    acciones.appendChild(btnOk);
+    caja.appendChild(texto);
+    caja.appendChild(acciones);
+    fila.appendChild(caja);
+    areaMensajes.appendChild(fila);
+    scrollAlFinal();
+
+    if (botonNueva) {
+      botonNueva.disabled = true;
+    }
+
+    window.setTimeout(function () {
+      btnOk.focus();
+    }, 50);
+  }
+
+  /**
+   * Limpia UI + localStorage y genera un session_id nuevo para Vertex.
+   */
+  function ejecutarNuevaConversacion() {
+    if (estaCargando) {
       return;
     }
 
@@ -1470,6 +1609,10 @@ function ua_chat_widget_js() {
     chatHistory = [];
     areaMensajes.innerHTML = "";
 
+    if (botonNueva) {
+      botonNueva.disabled = false;
+    }
+
     chatHistory.push({
       role: "model",
       parts: [{ text: MENSAJE_BIENVENIDA }]
@@ -1478,6 +1621,10 @@ function ua_chat_widget_js() {
     pintarMensaje("model", MENSAJE_BIENVENIDA);
     actualizarEstadoEnviar();
     campo.focus();
+  }
+
+  function iniciarNuevaConversacion() {
+    mostrarConfirmacionNuevaConversacion();
   }
 
   function estaAbierto() {
@@ -1567,7 +1714,15 @@ function ua_chat_widget_js() {
   });
 
   document.addEventListener("keydown", function (evento) {
-    if (evento.key === "Escape" && estaAbierto()) {
+    if (evento.key !== "Escape") {
+      return;
+    }
+    if (areaMensajes.querySelector(".ua-chat-confirm-row")) {
+      quitarConfirmacionNueva();
+      campo.focus();
+      return;
+    }
+    if (estaAbierto()) {
       cerrarChat();
     }
   });
