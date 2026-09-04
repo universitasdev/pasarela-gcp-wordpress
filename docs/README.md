@@ -458,20 +458,35 @@ Respuesta error (mensaje amigable según el fallo):
 
 ```json
 {
+  "event_type": "chat",
   "message": "texto del último mensaje del usuario",
-  "session_id": "wp-123-1718293812"
+  "session_id": "wp-123-1718293812",
+  "user_context": {
+    "user_id": 123,
+    "display_name": "Juan Pérez",
+    "course_id": 46067,
+    "course_title": "…",
+    "post_id": 46102,
+    "post_type": "sfwd-lessons",
+    "post_title": "…",
+    "lesson_id": 46102,
+    "topic_id": null,
+    "quiz_id": null
+  }
 }
 ```
 
-Respuesta esperada del BFF:
+Respuesta esperada del BFF (Analytics 360; `message_id`/`usage` opcionales mientras el BFF no los implemente):
 
 ```json
 {
-  "response": "texto plano o markdown del agente"
+  "response": "texto plano o markdown del agente",
+  "message_id": "uuid-opcional",
+  "usage": { "input_tokens": 120, "output_tokens": 80, "total_tokens": 200 }
 }
 ```
 
-`session_id` = `"wp-" + user_id + "-" + timestamp` (generado en el frontend, validado en PHP). Botón «Nueva conversación» regenera el ID y limpia `localStorage`.
+`session_id` = `"wp-" + user_id + "-" + timestamp` (generado en el frontend, validado en PHP). Botón «Nueva conversación» regenera el ID y limpia `localStorage`. Plan: [PLAN-tutor-analytics-360.md](PLAN-tutor-analytics-360.md).
 
 ---
 

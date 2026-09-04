@@ -11,6 +11,10 @@
  *   nonce      = window.uaChatConfig.nonce
  *   history    = JSON [{ role, parts: [{ text }] }, ...]
  *   session_id = wp-{userId}-{timestamp}
+ *   post_id    = ID del post LearnDash actual (contexto de página)
+ *
+ * Analytics 360: el PHP arma user_context y lo envía al BFF con event_type=chat.
+ * La respuesta puede incluir message_id + usage (backward-compatible sin ellos).
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -81,16 +85,27 @@ function ua_chat_handle_send_message() {
 		get_current_user_id()
 	);
 
-	$texto = ua_chat_consultar_bff( $mensaje, $session_id );
-	if ( is_wp_error( $texto ) ) {
-		ua_chat_log_error( 'bff', $texto->get_error_message() );
+	$post_id = isset( $_POST['post_id'] ) ? absint( $_POST['post_id'] ) : 0;
+	$user_context = ua_chat_construir_user_context( $post_id );
+
+	$resultado = ua_chat_consultar_bff( $mensaje, $session_id, $user_context );
+	if ( is_wp_error( $resultado ) ) {
+		ua_chat_log_error( 'bff', $resultado->get_error_message() );
 		wp_send_json_error(
-			array( 'message' => ua_chat_mensaje_amigable( $texto ) ),
+			array( 'message' => ua_chat_mensaje_amigable( $resultado ) ),
 			500
 		);
 	}
 
-	wp_send_json_success( array( 'text' => $texto ) );
+	$payload = array( 'text' => $resultado['text'] );
+	if ( ! empty( $resultado['message_id'] ) ) {
+		$payload['message_id'] = $resultado['message_id'];
+	}
+	if ( ! empty( $resultado['usage'] ) && is_array( $resultado['usage'] ) ) {
+		$payload['usage'] = $resultado['usage'];
+	}
+
+	wp_send_json_success( $payload );
 }
 
 /* =============================================================================
@@ -131,6 +146,76 @@ function ua_chat_debe_mostrar_widget() {
 	}
 
 	return ua_chat_usuario_tiene_acceso_curso();
+}
+
+/**
+ * Construye user_context para Analytics 360 (fuente de verdad: PHP + LearnDash).
+ * En admin-ajax el queried object se pierde: se usa $post_id enviado por el cliente
+ * y se valida que pertenezca al curso UA_CHAT_COURSE_ID. user_id siempre del auth.
+ *
+ * @param int $post_id ID del post actual (lección/tema/quiz/curso) o 0.
+ * @return array
+ */
+function ua_chat_construir_user_context( $post_id = 0 ) {
+	$user    = wp_get_current_user();
+	$user_id = (int) $user->ID;
+	$post_id = absint( $post_id );
+
+	$course_id = (int) UA_CHAT_COURSE_ID;
+	if ( $post_id > 0 && function_exists( 'learndash_get_course_id' ) ) {
+		$desde_post = (int) learndash_get_course_id( $post_id );
+		if ( $desde_post === (int) UA_CHAT_COURSE_ID ) {
+			$course_id = $desde_post;
+		} else {
+			/* Post ajeno al curso: no usar su título/tipo; solo contexto de curso */
+			$post_id = 0;
+		}
+	}
+
+	$post_type  = '';
+	$post_title = '';
+	$lesson_id  = null;
+	$topic_id   = null;
+	$quiz_id    = null;
+
+	if ( $post_id > 0 ) {
+		$post_type  = (string) get_post_type( $post_id );
+		$post_title = (string) get_the_title( $post_id );
+
+		if ( 'sfwd-lessons' === $post_type ) {
+			$lesson_id = $post_id;
+		} elseif ( 'sfwd-topic' === $post_type ) {
+			$topic_id = $post_id;
+			if ( function_exists( 'learndash_get_lesson_id' ) ) {
+				$lid = (int) learndash_get_lesson_id( $post_id );
+				$lesson_id = $lid > 0 ? $lid : null;
+			}
+		} elseif ( 'sfwd-quiz' === $post_type ) {
+			$quiz_id = $post_id;
+			if ( function_exists( 'learndash_get_lesson_id' ) ) {
+				$lid = (int) learndash_get_lesson_id( $post_id );
+				$lesson_id = $lid > 0 ? $lid : null;
+			}
+		}
+	}
+
+	$course_title = '';
+	if ( $course_id > 0 ) {
+		$course_title = (string) get_the_title( $course_id );
+	}
+
+	return array(
+		'user_id'      => $user_id,
+		'display_name' => is_string( $user->display_name ) ? $user->display_name : '',
+		'course_id'    => $course_id,
+		'course_title' => $course_title,
+		'post_id'      => $post_id > 0 ? $post_id : null,
+		'post_type'    => $post_type,
+		'post_title'   => $post_title,
+		'lesson_id'    => $lesson_id,
+		'topic_id'     => $topic_id,
+		'quiz_id'      => $quiz_id,
+	);
 }
 
 /* =============================================================================
@@ -286,11 +371,22 @@ function ua_chat_resolver_session_id( $raw, $user_id ) {
 }
 
 /**
+ * Consulta el BFF (Analytics 360: event_type + user_context).
+ * Backward-compatible: si el BFF aún no devuelve message_id/usage, solo usa response.
+ *
  * @param string $mensaje
  * @param string $session_id Ya validado (wp-{userId}-{timestamp}).
- * @return string|WP_Error
+ * @param array  $user_context Contexto armado en PHP.
+ * @return array{text: string, message_id?: string, usage?: array}|WP_Error
  */
-function ua_chat_consultar_bff( $mensaje, $session_id ) {
+function ua_chat_consultar_bff( $mensaje, $session_id, $user_context = array() ) {
+	$body = array(
+		'event_type'   => 'chat',
+		'message'      => $mensaje,
+		'session_id'   => $session_id,
+		'user_context' => $user_context,
+	);
+
 	$response = wp_remote_post(
 		UA_CHAT_BFF_URL,
 		array(
@@ -299,12 +395,7 @@ function ua_chat_consultar_bff( $mensaje, $session_id ) {
 				'Content-Type' => 'application/json; charset=utf-8',
 				'Accept'       => 'application/json',
 			),
-			'body'    => wp_json_encode(
-				array(
-					'message'    => $mensaje,
-					'session_id' => $session_id,
-				)
-			),
+			'body'    => wp_json_encode( $body ),
 		)
 	);
 
@@ -335,7 +426,29 @@ function ua_chat_consultar_bff( $mensaje, $session_id ) {
 		return new WP_Error( 'ua_chat_bff_empty', 'Respuesta del BFF vacía' );
 	}
 
-	return $texto;
+	$out = array( 'text' => $texto );
+
+	if ( ! empty( $decoded['message_id'] ) && is_string( $decoded['message_id'] ) ) {
+		$out['message_id'] = sanitize_text_field( $decoded['message_id'] );
+	}
+
+	if ( ! empty( $decoded['usage'] ) && is_array( $decoded['usage'] ) ) {
+		$usage = array();
+		if ( isset( $decoded['usage']['input_tokens'] ) ) {
+			$usage['input_tokens'] = (int) $decoded['usage']['input_tokens'];
+		}
+		if ( isset( $decoded['usage']['output_tokens'] ) ) {
+			$usage['output_tokens'] = (int) $decoded['usage']['output_tokens'];
+		}
+		if ( isset( $decoded['usage']['total_tokens'] ) ) {
+			$usage['total_tokens'] = (int) $decoded['usage']['total_tokens'];
+		}
+		if ( ! empty( $usage ) ) {
+			$out['usage'] = $usage;
+		}
+	}
+
+	return $out;
 }
 
 /* =============================================================================
@@ -348,11 +461,17 @@ function ua_chat_inyectar_widget_curso() {
 		return;
 	}
 
+	$ctx = ua_chat_construir_user_context( (int) get_queried_object_id() );
+
 	$config = array(
-		'ajaxUrl' => admin_url( 'admin-ajax.php' ),
-		'nonce'   => wp_create_nonce( UA_CHAT_NONCE_ACTION ),
-		'action'  => 'ua_chat_send_message',
-		'userId'  => (int) get_current_user_id(),
+		'ajaxUrl'      => admin_url( 'admin-ajax.php' ),
+		'nonce'        => wp_create_nonce( UA_CHAT_NONCE_ACTION ),
+		'action'       => 'ua_chat_send_message',
+		'userId'       => (int) $ctx['user_id'],
+		'displayName'  => (string) $ctx['display_name'],
+		'postId'       => isset( $ctx['post_id'] ) ? (int) $ctx['post_id'] : 0,
+		'courseId'     => (int) $ctx['course_id'],
+		'userContext'  => $ctx,
 	);
 
 	echo '<script>window.uaChatConfig=' . wp_json_encode( $config ) . ';</script>' . "\n";
@@ -1366,9 +1485,10 @@ function ua_chat_widget_js() {
    * Pinta un mensaje en el hilo.
    * @param {'user'|'model'} rol
    * @param {string} texto
+   * @param {string} [messageId] ID del turno (Analytics 360); solo bot.
    * @returns {HTMLElement} fila insertada
    */
-  function pintarMensaje(rol, texto) {
+  function pintarMensaje(rol, texto, messageId) {
     var fila = document.createElement("div");
     var esUsuario = rol === "user";
 
@@ -1380,6 +1500,10 @@ function ua_chat_widget_js() {
       "ua-chat-bubble " +
       (esUsuario ? "ua-chat-bubble-user" : "ua-chat-bubble-bot");
     burbuja.innerHTML = renderizarMarkdown(texto);
+
+    if (!esUsuario && messageId) {
+      burbuja.setAttribute("data-message-id", messageId);
+    }
 
     fila.appendChild(burbuja);
     areaMensajes.appendChild(fila);
@@ -1419,10 +1543,10 @@ function ua_chat_widget_js() {
      ============================================================ */
 
   /**
-   * Envía el historial al gateway PHP y devuelve el texto del agente.
+   * Envía el historial al gateway PHP y devuelve texto (+ message_id/usage si vienen).
    * Requiere window.uaChatConfig (nonce + ajaxUrl) inyectado por backend.php.
    * @param {Array} history
-   * @returns {Promise<string>}
+   * @returns {Promise<{text: string, messageId?: string, usage?: object}>}
    */
   async function sendMessageToBackend(history) {
     if (typeof window.uaChatConfig === "undefined") {
@@ -1434,6 +1558,12 @@ function ua_chat_widget_js() {
     formData.append("nonce", window.uaChatConfig.nonce);
     formData.append("history", JSON.stringify(history));
     formData.append("session_id", sessionId || obtenerOCrearSessionId());
+    formData.append(
+      "post_id",
+      String(
+        (window.uaChatConfig.postId && window.uaChatConfig.postId) || 0
+      )
+    );
 
     var response = await fetch(window.uaChatConfig.ajaxUrl, {
       method: "POST",
@@ -1449,7 +1579,11 @@ function ua_chat_widget_js() {
       throw new Error(result.data.message || "Error desconocido en el servidor");
     }
 
-    return result.data.text;
+    return {
+      text: result.data.text,
+      messageId: result.data.message_id || null,
+      usage: result.data.usage || null
+    };
   }
 
   /* ============================================================
@@ -1484,15 +1618,15 @@ function ua_chat_widget_js() {
     var typing = mostrarTyping();
 
     try {
-      var respuesta = await sendMessageToBackend(chatHistory);
+      var resultado = await sendMessageToBackend(chatHistory);
       quitarTyping(typing);
 
       chatHistory.push({
         role: "model",
-        parts: [{ text: respuesta }]
+        parts: [{ text: resultado.text }]
       });
       guardarHistorial();
-      pintarMensaje("model", respuesta);
+      pintarMensaje("model", resultado.text, resultado.messageId);
     } catch (error) {
       quitarTyping(typing);
       var mensajeError = (error && error.message)

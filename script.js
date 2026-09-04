@@ -297,9 +297,10 @@
    * Pinta un mensaje en el hilo.
    * @param {'user'|'model'} rol
    * @param {string} texto
+   * @param {string} [messageId] ID del turno (Analytics 360); solo bot.
    * @returns {HTMLElement} fila insertada
    */
-  function pintarMensaje(rol, texto) {
+  function pintarMensaje(rol, texto, messageId) {
     var fila = document.createElement("div");
     var esUsuario = rol === "user";
 
@@ -311,6 +312,10 @@
       "ua-chat-bubble " +
       (esUsuario ? "ua-chat-bubble-user" : "ua-chat-bubble-bot");
     burbuja.innerHTML = renderizarMarkdown(texto);
+
+    if (!esUsuario && messageId) {
+      burbuja.setAttribute("data-message-id", messageId);
+    }
 
     fila.appendChild(burbuja);
     areaMensajes.appendChild(fila);
@@ -350,10 +355,10 @@
      ============================================================ */
 
   /**
-   * Envía el historial al gateway PHP y devuelve el texto del agente.
+   * Envía el historial al gateway PHP y devuelve texto (+ message_id/usage si vienen).
    * Requiere window.uaChatConfig (nonce + ajaxUrl) inyectado por backend.php.
    * @param {Array} history
-   * @returns {Promise<string>}
+   * @returns {Promise<{text: string, messageId?: string, usage?: object}>}
    */
   async function sendMessageToBackend(history) {
     if (typeof window.uaChatConfig === "undefined") {
@@ -365,6 +370,12 @@
     formData.append("nonce", window.uaChatConfig.nonce);
     formData.append("history", JSON.stringify(history));
     formData.append("session_id", sessionId || obtenerOCrearSessionId());
+    formData.append(
+      "post_id",
+      String(
+        (window.uaChatConfig.postId && window.uaChatConfig.postId) || 0
+      )
+    );
 
     var response = await fetch(window.uaChatConfig.ajaxUrl, {
       method: "POST",
@@ -380,7 +391,11 @@
       throw new Error(result.data.message || "Error desconocido en el servidor");
     }
 
-    return result.data.text;
+    return {
+      text: result.data.text,
+      messageId: result.data.message_id || null,
+      usage: result.data.usage || null
+    };
   }
 
   /* ============================================================
@@ -415,15 +430,15 @@
     var typing = mostrarTyping();
 
     try {
-      var respuesta = await sendMessageToBackend(chatHistory);
+      var resultado = await sendMessageToBackend(chatHistory);
       quitarTyping(typing);
 
       chatHistory.push({
         role: "model",
-        parts: [{ text: respuesta }]
+        parts: [{ text: resultado.text }]
       });
       guardarHistorial();
-      pintarMensaje("model", respuesta);
+      pintarMensaje("model", resultado.text, resultado.messageId);
     } catch (error) {
       quitarTyping(typing);
       var mensajeError = (error && error.message)
