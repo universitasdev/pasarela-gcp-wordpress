@@ -318,10 +318,105 @@
     }
 
     fila.appendChild(burbuja);
+
+    if (!esUsuario && messageId) {
+      fila.appendChild(crearBarraFeedback(messageId));
+    }
+
     areaMensajes.appendChild(fila);
     scrollAlFinal();
 
     return fila;
+  }
+
+  /**
+   * Barra 👍/👎 bajo la burbuja del bot (no se guarda en localStorage).
+   * @param {string} messageId
+   * @returns {HTMLElement}
+   */
+  function crearBarraFeedback(messageId) {
+    var barra = document.createElement("div");
+    barra.className = "ua-chat-feedback";
+    barra.setAttribute("data-message-id", messageId);
+
+    var btnUp = document.createElement("button");
+    btnUp.type = "button";
+    btnUp.className = "ua-chat-feedback-btn ua-chat-feedback-up";
+    btnUp.setAttribute("aria-label", "Respuesta útil");
+    btnUp.title = "Útil";
+    btnUp.textContent = "👍";
+
+    var btnDown = document.createElement("button");
+    btnDown.type = "button";
+    btnDown.className = "ua-chat-feedback-btn ua-chat-feedback-down";
+    btnDown.setAttribute("aria-label", "Respuesta no útil");
+    btnDown.title = "No útil";
+    btnDown.textContent = "👎";
+
+    btnUp.addEventListener("click", function () {
+      enviarFeedback(messageId, 1, barra, btnUp, btnDown);
+    });
+    btnDown.addEventListener("click", function () {
+      enviarFeedback(messageId, -1, barra, btnDown, btnUp);
+    });
+
+    barra.appendChild(btnUp);
+    barra.appendChild(btnDown);
+    return barra;
+  }
+
+  /**
+   * @param {string} messageId
+   * @param {1|-1} score
+   * @param {HTMLElement} barra
+   * @param {HTMLElement} btnElegido
+   * @param {HTMLElement} btnOtro
+   */
+  async function enviarFeedback(messageId, score, barra, btnElegido, btnOtro) {
+    if (
+      !messageId ||
+      barra.classList.contains("is-voted") ||
+      typeof window.uaChatConfig === "undefined"
+    ) {
+      return;
+    }
+
+    btnElegido.disabled = true;
+    btnOtro.disabled = true;
+
+    try {
+      var formData = new URLSearchParams();
+      formData.append("action", window.uaChatConfig.actionFeedback);
+      formData.append("nonce", window.uaChatConfig.nonce);
+      formData.append("message_id", messageId);
+      formData.append("session_id", sessionId || obtenerOCrearSessionId());
+      formData.append("feedback_score", String(score));
+
+      var response = await fetch(window.uaChatConfig.ajaxUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: formData.toString()
+      });
+
+      var result = await response.json();
+      if (!result.success) {
+        throw new Error(
+          (result.data && result.data.message) || "No se pudo enviar el feedback"
+        );
+      }
+
+      barra.classList.add("is-voted");
+      btnElegido.classList.add("is-selected");
+      var gracias = document.createElement("span");
+      gracias.className = "ua-chat-feedback-thanks";
+      gracias.textContent = "Gracias";
+      barra.appendChild(gracias);
+    } catch (error) {
+      btnElegido.disabled = false;
+      btnOtro.disabled = false;
+    }
   }
 
   /** Inserta la burbuja de "Typing..." del bot y la devuelve para poder retirarla. */
