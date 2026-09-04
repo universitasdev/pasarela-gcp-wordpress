@@ -815,7 +815,9 @@ function ua_chat_widget_css() {
 }
 
 .ua-chat-row-bot {
-  justify-content: flex-start;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
 }
 
 /* Burbujas */
@@ -938,30 +940,36 @@ function ua_chat_widget_css() {
   outline: none;
 }
 
-/* Feedback 👍/👎 (Analytics 360) */
+/* Feedback 👍/👎 (Analytics 360) — fuera de la burbuja, bajo el mensaje */
 .ua-chat-feedback {
   display: flex;
   align-items: center;
-  gap: 4px;
-  margin-top: 6px;
-  padding-left: 2px;
+  gap: 2px;
+  margin: 0;
+  padding: 0 2px;
+  max-width: 78%;
 }
 
 .ua-chat-feedback-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
+  width: 28px;
   height: 28px;
   padding: 0;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: #767777;
-  font-size: 14px;
-  line-height: 1;
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+
+.ua-chat-feedback-btn svg {
+  display: block;
+  width: 15px;
+  height: 15px;
+  stroke: currentColor;
 }
 
 .ua-chat-feedback-btn:hover:not(:disabled),
@@ -973,7 +981,7 @@ function ua_chat_widget_css() {
 
 .ua-chat-feedback-btn:disabled {
   cursor: default;
-  opacity: 0.45;
+  opacity: 0.4;
 }
 
 .ua-chat-feedback.is-voted .ua-chat-feedback-btn.is-selected {
@@ -983,9 +991,13 @@ function ua_chat_widget_css() {
 }
 
 .ua-chat-feedback-thanks {
-  margin: 0 0 0 4px;
+  margin: 0 0 0 6px;
   font-size: 11px;
   color: #767777;
+}
+
+.ua-chat-confirm-row {
+  margin-top: 8px;
 }
 
 /* Indicador de escritura (3 puntitos) */
@@ -1671,7 +1683,29 @@ function ua_chat_widget_js() {
   }
 
   /**
-   * Barra 👍/👎 bajo la burbuja del bot (no se guarda en localStorage).
+   * Icono SVG silueta (stroke = currentColor) para feedback.
+   * @param {'up'|'down'} tipo
+   * @returns {string} HTML del SVG
+   */
+  function iconoFeedbackSvg(tipo) {
+    if (tipo === "down") {
+      return (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<path d="M17 14V2"/>' +
+        '<path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"/>' +
+        "</svg>"
+      );
+    }
+    return (
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<path d="M7 10v12"/>' +
+      '<path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/>' +
+      "</svg>"
+    );
+  }
+
+  /**
+   * Barra de feedback fuera de la burbuja (no se guarda en localStorage).
    * @param {string} messageId
    * @returns {HTMLElement}
    */
@@ -1685,14 +1719,14 @@ function ua_chat_widget_js() {
     btnUp.className = "ua-chat-feedback-btn ua-chat-feedback-up";
     btnUp.setAttribute("aria-label", "Respuesta útil");
     btnUp.title = "Útil";
-    btnUp.textContent = "👍";
+    btnUp.innerHTML = iconoFeedbackSvg("up");
 
     var btnDown = document.createElement("button");
     btnDown.type = "button";
     btnDown.className = "ua-chat-feedback-btn ua-chat-feedback-down";
     btnDown.setAttribute("aria-label", "Respuesta no útil");
     btnDown.title = "No útil";
-    btnDown.textContent = "👎";
+    btnDown.innerHTML = iconoFeedbackSvg("down");
 
     btnUp.addEventListener("click", function () {
       enviarFeedback(messageId, 1, barra, btnUp, btnDown);
