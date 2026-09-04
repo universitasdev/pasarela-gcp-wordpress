@@ -341,6 +341,56 @@
   outline: none;
 }
 
+/* Feedback 👍/👎 (Analytics 360) */
+.ua-chat-feedback {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  padding-left: 2px;
+}
+
+.ua-chat-feedback-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #767777;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+
+.ua-chat-feedback-btn:hover:not(:disabled),
+.ua-chat-feedback-btn:focus-visible:not(:disabled) {
+  background: rgba(3, 3, 91, 0.08);
+  color: #03035b;
+  outline: none;
+}
+
+.ua-chat-feedback-btn:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.ua-chat-feedback.is-voted .ua-chat-feedback-btn.is-selected {
+  opacity: 1;
+  color: #03035b;
+  background: rgba(3, 3, 91, 0.1);
+}
+
+.ua-chat-feedback-thanks {
+  margin: 0 0 0 4px;
+  font-size: 11px;
+  color: #767777;
+}
+
 /* Indicador de escritura (3 puntitos) */
 .ua-chat-typing {
   display: inline-flex;

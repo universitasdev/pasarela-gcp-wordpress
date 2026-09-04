@@ -38,6 +38,6 @@ Telemetría, feedback y FinOps para el Tutor IA (curso Actas de Entrega, ID `460
 
 - [x] Fase 0: branch `feature/analytics-360` + este doc
 - [x] Fase 1 (WP): `ua_chat_construir_user_context()`, payload `event_type`+`user_context`, parse `message_id`/`usage`, JS `data-message-id` + `post_id`
-- [ ] Fase 2: BFF (repo aparte)
-- [ ] Fase 3: UI thumbs
+- [x] Fase 2: BFF (gateway-ai-ae) `message_id`, logs, `/api/feedback`
+- [x] Fase 3: UI thumbs + AJAX `ua_chat_send_feedback` (branch `feature/analytics-thumbs`)
 - [ ] Fases 4–6: GCP / Looker / prod

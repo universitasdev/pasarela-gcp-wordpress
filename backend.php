@@ -38,6 +38,13 @@ if ( ! defined( 'UA_CHAT_BFF_URL' ) ) {
 	);
 }
 
+if ( ! defined( 'UA_CHAT_BFF_FEEDBACK_URL' ) ) {
+	define(
+		'UA_CHAT_BFF_FEEDBACK_URL',
+		'https://academy-ae-gateway-919237484930.us-east1.run.app/api/feedback'
+	);
+}
+
 if ( ! defined( 'UA_CHAT_NONCE_ACTION' ) ) {
 	define( 'UA_CHAT_NONCE_ACTION', 'ua_chat_send_message' );
 }
@@ -47,6 +54,7 @@ if ( ! defined( 'UA_CHAT_NONCE_ACTION' ) ) {
  * ============================================================================= */
 
 add_action( 'wp_ajax_ua_chat_send_message', 'ua_chat_handle_send_message' );
+add_action( 'wp_ajax_ua_chat_send_feedback', 'ua_chat_handle_send_feedback' );
 add_action( 'wp_footer', 'ua_chat_inyectar_widget_curso', 20 );
 
 /* =============================================================================
@@ -106,6 +114,53 @@ function ua_chat_handle_send_message() {
 	}
 
 	wp_send_json_success( $payload );
+}
+
+/**
+ * AJAX: feedback 👍/👎 → BFF /api/feedback (Analytics 360 Fase 3).
+ */
+function ua_chat_handle_send_feedback() {
+	if ( ! is_user_logged_in() ) {
+		wp_send_json_error( array( 'message' => 'Error de seguridad' ), 403 );
+	}
+
+	if ( ! check_ajax_referer( UA_CHAT_NONCE_ACTION, 'nonce', false ) ) {
+		wp_send_json_error( array( 'message' => 'Error de seguridad' ), 403 );
+	}
+
+	if ( ! ua_chat_usuario_tiene_acceso_curso() ) {
+		wp_send_json_error( array( 'message' => 'No estás inscrito en el curso' ), 403 );
+	}
+
+	$message_id = isset( $_POST['message_id'] )
+		? sanitize_text_field( wp_unslash( $_POST['message_id'] ) )
+		: '';
+	$session_id = ua_chat_resolver_session_id(
+		isset( $_POST['session_id'] ) ? wp_unslash( $_POST['session_id'] ) : '',
+		get_current_user_id()
+	);
+	$score_raw = isset( $_POST['feedback_score'] ) ? (int) $_POST['feedback_score'] : 0;
+
+	if ( '' === $message_id || ! in_array( $score_raw, array( 1, -1 ), true ) ) {
+		wp_send_json_error( array( 'message' => 'Error de seguridad' ), 400 );
+	}
+
+	$result = ua_chat_enviar_feedback_bff(
+		$message_id,
+		$session_id,
+		$score_raw,
+		(int) get_current_user_id()
+	);
+
+	if ( is_wp_error( $result ) ) {
+		ua_chat_log_error( 'feedback', $result->get_error_message() );
+		wp_send_json_error(
+			array( 'message' => 'No pude registrar tu valoración. Intenta de nuevo.' ),
+			500
+		);
+	}
+
+	wp_send_json_success( array( 'ok' => true, 'message_id' => $message_id ) );
 }
 
 /* =============================================================================
@@ -451,6 +506,53 @@ function ua_chat_consultar_bff( $mensaje, $session_id, $user_context = array() )
 	return $out;
 }
 
+/**
+ * Envía feedback al BFF (Analytics 360).
+ *
+ * @param string $message_id
+ * @param string $session_id
+ * @param int    $feedback_score 1 | -1
+ * @param int    $user_id
+ * @return true|WP_Error
+ */
+function ua_chat_enviar_feedback_bff( $message_id, $session_id, $feedback_score, $user_id ) {
+	$body = array(
+		'event_type'     => 'feedback',
+		'message_id'     => $message_id,
+		'session_id'     => $session_id,
+		'feedback_score' => (int) $feedback_score,
+		'user_id'        => (int) $user_id,
+	);
+
+	$response = wp_remote_post(
+		UA_CHAT_BFF_FEEDBACK_URL,
+		array(
+			'timeout' => 30,
+			'headers' => array(
+				'Content-Type' => 'application/json; charset=utf-8',
+				'Accept'       => 'application/json',
+			),
+			'body'    => wp_json_encode( $body ),
+		)
+	);
+
+	if ( is_wp_error( $response ) ) {
+		return new WP_Error( 'ua_chat_feedback_transport', $response->get_error_message() );
+	}
+
+	$code = (int) wp_remote_retrieve_response_code( $response );
+	if ( $code < 200 || $code >= 300 ) {
+		$crudo   = wp_remote_retrieve_body( $response );
+		$decoded = json_decode( $crudo, true );
+		$detalle = is_array( $decoded ) && isset( $decoded['detail'] )
+			? (string) $decoded['detail']
+			: ( 'HTTP ' . $code );
+		return new WP_Error( 'ua_chat_feedback', 'BFF feedback rechazado: ' . $detalle );
+	}
+
+	return true;
+}
+
 /* =============================================================================
  * 5. Inyección del widget (solo curso + alumno inscrito)
  * Orden: uaChatConfig → CSS → HTML → JS
@@ -464,14 +566,15 @@ function ua_chat_inyectar_widget_curso() {
 	$ctx = ua_chat_construir_user_context( (int) get_queried_object_id() );
 
 	$config = array(
-		'ajaxUrl'      => admin_url( 'admin-ajax.php' ),
-		'nonce'        => wp_create_nonce( UA_CHAT_NONCE_ACTION ),
-		'action'       => 'ua_chat_send_message',
-		'userId'       => (int) $ctx['user_id'],
-		'displayName'  => (string) $ctx['display_name'],
-		'postId'       => isset( $ctx['post_id'] ) ? (int) $ctx['post_id'] : 0,
-		'courseId'     => (int) $ctx['course_id'],
-		'userContext'  => $ctx,
+		'ajaxUrl'        => admin_url( 'admin-ajax.php' ),
+		'nonce'          => wp_create_nonce( UA_CHAT_NONCE_ACTION ),
+		'action'         => 'ua_chat_send_message',
+		'actionFeedback' => 'ua_chat_send_feedback',
+		'userId'         => (int) $ctx['user_id'],
+		'displayName'    => (string) $ctx['display_name'],
+		'postId'         => isset( $ctx['post_id'] ) ? (int) $ctx['post_id'] : 0,
+		'courseId'       => (int) $ctx['course_id'],
+		'userContext'    => $ctx,
 	);
 
 	echo '<script>window.uaChatConfig=' . wp_json_encode( $config ) . ';</script>' . "\n";
@@ -833,6 +936,56 @@ function ua_chat_widget_css() {
 .ua-chat-confirm-ok:focus-visible {
   background: #05057a;
   outline: none;
+}
+
+/* Feedback 👍/👎 (Analytics 360) */
+.ua-chat-feedback {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  padding-left: 2px;
+}
+
+.ua-chat-feedback-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #767777;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+
+.ua-chat-feedback-btn:hover:not(:disabled),
+.ua-chat-feedback-btn:focus-visible:not(:disabled) {
+  background: rgba(3, 3, 91, 0.08);
+  color: #03035b;
+  outline: none;
+}
+
+.ua-chat-feedback-btn:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.ua-chat-feedback.is-voted .ua-chat-feedback-btn.is-selected {
+  opacity: 1;
+  color: #03035b;
+  background: rgba(3, 3, 91, 0.1);
+}
+
+.ua-chat-feedback-thanks {
+  margin: 0 0 0 4px;
+  font-size: 11px;
+  color: #767777;
 }
 
 /* Indicador de escritura (3 puntitos) */
@@ -1506,10 +1659,105 @@ function ua_chat_widget_js() {
     }
 
     fila.appendChild(burbuja);
+
+    if (!esUsuario && messageId) {
+      fila.appendChild(crearBarraFeedback(messageId));
+    }
+
     areaMensajes.appendChild(fila);
     scrollAlFinal();
 
     return fila;
+  }
+
+  /**
+   * Barra 👍/👎 bajo la burbuja del bot (no se guarda en localStorage).
+   * @param {string} messageId
+   * @returns {HTMLElement}
+   */
+  function crearBarraFeedback(messageId) {
+    var barra = document.createElement("div");
+    barra.className = "ua-chat-feedback";
+    barra.setAttribute("data-message-id", messageId);
+
+    var btnUp = document.createElement("button");
+    btnUp.type = "button";
+    btnUp.className = "ua-chat-feedback-btn ua-chat-feedback-up";
+    btnUp.setAttribute("aria-label", "Respuesta útil");
+    btnUp.title = "Útil";
+    btnUp.textContent = "👍";
+
+    var btnDown = document.createElement("button");
+    btnDown.type = "button";
+    btnDown.className = "ua-chat-feedback-btn ua-chat-feedback-down";
+    btnDown.setAttribute("aria-label", "Respuesta no útil");
+    btnDown.title = "No útil";
+    btnDown.textContent = "👎";
+
+    btnUp.addEventListener("click", function () {
+      enviarFeedback(messageId, 1, barra, btnUp, btnDown);
+    });
+    btnDown.addEventListener("click", function () {
+      enviarFeedback(messageId, -1, barra, btnDown, btnUp);
+    });
+
+    barra.appendChild(btnUp);
+    barra.appendChild(btnDown);
+    return barra;
+  }
+
+  /**
+   * @param {string} messageId
+   * @param {1|-1} score
+   * @param {HTMLElement} barra
+   * @param {HTMLElement} btnElegido
+   * @param {HTMLElement} btnOtro
+   */
+  async function enviarFeedback(messageId, score, barra, btnElegido, btnOtro) {
+    if (
+      !messageId ||
+      barra.classList.contains("is-voted") ||
+      typeof window.uaChatConfig === "undefined"
+    ) {
+      return;
+    }
+
+    btnElegido.disabled = true;
+    btnOtro.disabled = true;
+
+    try {
+      var formData = new URLSearchParams();
+      formData.append("action", window.uaChatConfig.actionFeedback);
+      formData.append("nonce", window.uaChatConfig.nonce);
+      formData.append("message_id", messageId);
+      formData.append("session_id", sessionId || obtenerOCrearSessionId());
+      formData.append("feedback_score", String(score));
+
+      var response = await fetch(window.uaChatConfig.ajaxUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: formData.toString()
+      });
+
+      var result = await response.json();
+      if (!result.success) {
+        throw new Error(
+          (result.data && result.data.message) || "No se pudo enviar el feedback"
+        );
+      }
+
+      barra.classList.add("is-voted");
+      btnElegido.classList.add("is-selected");
+      var gracias = document.createElement("span");
+      gracias.className = "ua-chat-feedback-thanks";
+      gracias.textContent = "Gracias";
+      barra.appendChild(gracias);
+    } catch (error) {
+      btnElegido.disabled = false;
+      btnOtro.disabled = false;
+    }
   }
 
   /** Inserta la burbuja de "Typing..." del bot y la devuelve para poder retirarla. */
