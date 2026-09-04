@@ -218,7 +218,9 @@
 }
 
 .ua-chat-row-bot {
-  justify-content: flex-start;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
 }
 
 /* Burbujas */
@@ -341,30 +343,36 @@
   outline: none;
 }
 
-/* Feedback 👍/👎 (Analytics 360) */
+/* Feedback 👍/👎 (Analytics 360) — fuera de la burbuja, bajo el mensaje */
 .ua-chat-feedback {
   display: flex;
   align-items: center;
-  gap: 4px;
-  margin-top: 6px;
-  padding-left: 2px;
+  gap: 2px;
+  margin: 0;
+  padding: 0 2px;
+  max-width: 78%;
 }
 
 .ua-chat-feedback-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
+  width: 28px;
   height: 28px;
   padding: 0;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: #767777;
-  font-size: 14px;
-  line-height: 1;
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+
+.ua-chat-feedback-btn svg {
+  display: block;
+  width: 15px;
+  height: 15px;
+  stroke: currentColor;
 }
 
 .ua-chat-feedback-btn:hover:not(:disabled),
@@ -376,7 +384,7 @@
 
 .ua-chat-feedback-btn:disabled {
   cursor: default;
-  opacity: 0.45;
+  opacity: 0.4;
 }
 
 .ua-chat-feedback.is-voted .ua-chat-feedback-btn.is-selected {
@@ -386,9 +394,13 @@
 }
 
 .ua-chat-feedback-thanks {
-  margin: 0 0 0 4px;
+  margin: 0 0 0 6px;
   font-size: 11px;
   color: #767777;
+}
+
+.ua-chat-confirm-row {
+  margin-top: 8px;
 }
 
 /* Indicador de escritura (3 puntitos) */
